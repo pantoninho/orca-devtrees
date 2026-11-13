@@ -67,6 +67,15 @@ orca plugin dev load /path/to/orca-devtrees
   is broader than what the plugin does: it only opens new terminals in local worktrees, running
   `devtrees attach` or `devtrees logs`. It never types into an existing terminal.
 
+## Optional: stop and start with the worktree
+
+Orca can run a script per repo when it creates a worktree and before it archives one. They are
+set in that repo's settings in Orca; the plugin cannot set them.
+
+- Archive script `devtrees down`: stops the stack cleanly before the worktree is removed,
+  instead of pruning it afterwards.
+- Setup script `devtrees up --no-attach`: starts the stack in each new worktree.
+
 ## Which worktree it acts on
 
 The one on the row you pressed. Each action carries that row's Orca workspace id; the worker
