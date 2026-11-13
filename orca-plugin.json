@@ -3,7 +3,7 @@
   "id": "devtrees",
   "name": "devtrees",
   "version": "0.1.0",
-  "description": "Shows and controls the devtrees stack of the focused worktree, and prunes the stacks of removed worktrees.",
+  "description": "Lists and controls the devtrees stack of every local worktree, and prunes the stacks of removed worktrees.",
   "repository": "https://github.com/pantoninho/orca-devtrees",
   "license": "MIT",
   "engines": {
@@ -54,7 +54,7 @@
       {
         "key": "orcaPath",
         "title": "orca executable",
-        "description": "Name or absolute path of the orca CLI, used to find which worktree the focused terminals belong to. A name is looked up on your login PATH.",
+        "description": "Name or absolute path of the orca CLI, used to find which worktree the focused terminals belong to, to highlight it. A name is looked up on your login PATH.",
         "type": "string",
         "default": "orca",
         "placeholder": "orca"

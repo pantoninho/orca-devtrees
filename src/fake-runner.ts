@@ -15,43 +15,53 @@ export const fail = (code: string, message: string): Partial<RunResult> => ({
   stderr: `devtrees: ${message}\n`
 })
 
-/** `ls --services --json` with one running worktree instance and the shared instance. */
-export function lsRunning(path: string, extra: { dead?: string[] } = {}) {
+/** A running worktree instance, as `ls --services --json` lists it. */
+function worktreeInstance(path: string, port: number, dead: Set<string>) {
+  return {
+    id: idOf(path),
+    kind: 'worktree',
+    status: 'running',
+    ports: { WEB_PORT: port, CACHE_PORT: 60672 },
+    namespaces: ['default', 'app'],
+    services_read: 'ok',
+    reload_pending: false,
+    services: [
+      { name: 'web', status: dead.has('web') ? 'Completed' : 'Running', health: 'ready', ports: { WEB_PORT: port }, namespaces: ['default'], tier: 'isolated', state: dead.has('web') ? 'dead' : 'active', pid: 2 },
+      { name: 'worker', status: 'Running', health: 'unknown', ports: {}, namespaces: ['app'], tier: 'isolated', state: 'active', pid: 3 }
+    ]
+  }
+}
+
+const SHARED_INSTANCE = {
+  id: 'shared',
+  kind: 'shared',
+  status: 'running',
+  ports: { CACHE_PORT: 60672 },
+  namespaces: ['default'],
+  services_read: 'ok',
+  reload_pending: false,
+  services: [
+    { name: 'cache', status: 'Running', health: 'unknown', ports: { CACHE_PORT: 60672 }, namespaces: ['default'], tier: 'shared', state: 'active', pid: 1 }
+  ]
+}
+
+/**
+ * `ls --services --json` of one repo, with these worktrees running (the first on port 38176,
+ * the next on 38276, ...) and the shared instance.
+ */
+export function lsRepo(paths: string[], extra: { dead?: string[] } = {}) {
   const dead = new Set(extra.dead ?? [])
   return {
     schema_version: '1',
     ls: {
-      instances: [
-        {
-          id: 'shared',
-          kind: 'shared',
-          status: 'running',
-          ports: { CACHE_PORT: 60672 },
-          namespaces: ['default'],
-          services_read: 'ok',
-          reload_pending: false,
-          services: [
-            { name: 'cache', status: 'Running', health: 'unknown', ports: { CACHE_PORT: 60672 }, namespaces: ['default'], tier: 'shared', state: 'active', pid: 1 }
-          ]
-        },
-        {
-          id: idOf(path),
-          kind: 'worktree',
-          status: 'running',
-          ports: { WEB_PORT: 38176, CACHE_PORT: 60672 },
-          namespaces: ['default', 'app'],
-          services_read: 'ok',
-          reload_pending: false,
-          services: [
-            { name: 'web', status: dead.has('web') ? 'Completed' : 'Running', health: 'ready', ports: { WEB_PORT: 38176 }, namespaces: ['default'], tier: 'isolated', state: dead.has('web') ? 'dead' : 'active', pid: 2 },
-            { name: 'worker', status: 'Running', health: 'unknown', ports: {}, namespaces: ['app'], tier: 'isolated', state: 'active', pid: 3 }
-          ]
-        }
-      ],
+      instances: [SHARED_INSTANCE, ...paths.map((p, i) => worktreeInstance(p, 38176 + i * 100, dead))],
       shared_ports: {}
     }
   }
 }
+
+/** `ls --services --json` with one running worktree instance and the shared instance. */
+export const lsRunning = (path: string, extra: { dead?: string[] } = {}) => lsRepo([path], extra)
 
 export const lsEmpty = { schema_version: '1', ls: { instances: [], shared_ports: {} } }
 
@@ -76,6 +86,11 @@ export class FakeRunner implements Runner {
   terminals: ReturnType<typeof terminal>[] | null = []
   /** `git rev-parse --git-common-dir` by cwd; a cwd not listed fails as outside a repo. */
   commonDirs = new Map<string, string>()
+  /**
+   * Worktrees whose instance runs. Without an `ls` reply, `ls` answers as devtrees does: the
+   * running instances of every worktree of the cwd's repo (same common dir), and none of others.
+   */
+  running: string[] = []
   /** Replies to commands still running, released by `release()`. */
   private held: (() => void)[] = []
   hold = false
@@ -108,6 +123,12 @@ export class FakeRunner implements Runner {
     if (call.args[0] === 'rev-parse') {
       const dir = this.commonDirs.get(call.cwd)
       return dir === undefined ? { code: 128, stderr: 'fatal: not a git repository' } : { code: 0, stdout: `${dir}\n` }
+    }
+    if (call.args[0] === 'ls') {
+      const repo = this.commonDirs.get(call.cwd)
+      if (repo === undefined) return { code: 1, stderr: 'devtrees: not a git repository\n' }
+      const paths = this.running.filter((p) => this.commonDirs.get(p) === repo)
+      return { code: 0, stdout: `${JSON.stringify(paths.length === 0 ? lsEmpty : lsRepo(paths))}\n` }
     }
     return null
   }

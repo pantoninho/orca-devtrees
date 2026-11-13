@@ -1,6 +1,6 @@
 // Talking to the devtrees CLI: what to run, and how to read what it prints.
 // Pure functions over a `Runner`, so tests replace the CLI with a stub.
-import type { InstanceView, PortView, ServiceView, StackView } from './protocol'
+import type { InstanceView, PortView, RepoView, RowView, ServiceView, StackView } from './protocol'
 
 /** Oldest devtrees with `ls --services` and `restart`. */
 export const MIN_DEVTREES_VERSION = '0.1.0'
@@ -130,22 +130,42 @@ function instanceOf(raw: Record<string, unknown>): InstanceView {
   return { status, id: typeof raw.id === 'string' ? raw.id : '', namespaces, services }
 }
 
-/** Picks this worktree's instance and the shared one out of `ls --services --json`. */
-export function readLs(
-  stdout: string,
-  worktreeId: string
-): { stack: InstanceView; shared: InstanceView | null } | null {
+/**
+ * What one `ls --services --json` says: every worktree instance of the repo, by worktree id, and
+ * the shared one. `ls` lists the whole repo from any of its worktrees (it reads the run dir of
+ * the git common dir), so one run covers every row of a repo.
+ */
+export interface LsRead {
+  worktrees: Record<string, InstanceView>
+  shared: InstanceView | null
+}
+
+export function readLs(stdout: string): LsRead | null {
   const ls = parseJson(stdout)?.ls
   if (!isRecord(ls) || !Array.isArray(ls.instances)) return null
-  const instances = ls.instances.filter(isRecord)
-  const own = instances.find((i) => i.kind === 'worktree' && i.id === worktreeId)
-  const shared = instances.find((i) => i.kind === 'shared')
-  return {
-    stack: own
-      ? instanceOf(own)
-      : { status: 'down', id: worktreeId, namespaces: [], services: [] },
-    shared: shared ? instanceOf(shared) : null
+  const worktrees: Record<string, InstanceView> = {}
+  let shared: InstanceView | null = null
+  for (const raw of ls.instances.filter(isRecord)) {
+    if (raw.kind === 'shared') shared ??= instanceOf(raw)
+    else if (raw.kind === 'worktree' && typeof raw.id === 'string') worktrees[raw.id] = instanceOf(raw)
   }
+  return { worktrees, shared }
+}
+
+/**
+ * A repo's label: Orca's project name when it sends one (1.4.256 and newer), else the main
+ * checkout's folder (`/x/app/.git` gives `app`), or a bare repo's name (`/x/app.git` gives `app`).
+ */
+export function repoLabel(repo: string, project: string | null): string {
+  if (project !== null && project !== '') return project
+  const baseName = (path: string) => path.split('/').filter(Boolean).pop() ?? path
+  if (repo.endsWith('/.git')) return baseName(repo.slice(0, -'/.git'.length))
+  return baseName(repo).replace(/\.git$/, '') || repo
+}
+
+/** One worktree's instance in an `ls` read; down when `ls` does not list it. */
+export function stackOf(ls: LsRead, worktreeId: string): InstanceView {
+  return ls.worktrees[worktreeId] ?? { status: 'down', id: worktreeId, namespaces: [], services: [] }
 }
 
 /** The arguments of each stack action. */
@@ -176,10 +196,25 @@ const BUSY_WORDS = {
   'restart-service': 'restarting'
 } as const
 
-/** The status bar item for a view, such as `devtrees: up · web :41230`. */
+/** The focused row of a view, when focus named one row for certain. */
+export function focusedRow(view: StackView): { row: RowView; repo: RepoView } | null {
+  if (view.focusedId === null) return null
+  for (const repo of view.repos) {
+    const row = repo.rows.find((r) => r.workspace.id === view.focusedId)
+    if (row) return { row, repo }
+  }
+  return null
+}
+
+/**
+ * The status bar item for the focused row, such as `devtrees: up · web :41230`. Hidden when
+ * focus does not name one row for certain.
+ */
 export function statusBarOf(view: StackView): StatusBarState {
   const hidden = { visible: false, text: 'devtrees', tone: 'neutral', tooltip: 'devtrees' } as const
-  if (view.kind === 'no-workspace' || view.kind === 'unresolved' || view.kind === 'no-config') return hidden
+  const focused = focusedRow(view)
+  if (focused === null) return hidden
+  const { row, repo } = focused
   if (view.kind === 'not-installed') {
     return { visible: true, text: 'devtrees: not found', tone: 'warning', tooltip: `${view.executable} was not found` }
   }
@@ -191,15 +226,15 @@ export function statusBarOf(view: StackView): StatusBarState {
       tooltip: `devtrees ${MIN_DEVTREES_VERSION} or newer is needed`
     }
   }
-  if (view.busy !== null) {
-    const what = view.busy.service === null ? '' : ` ${view.busy.service}`
-    return { visible: true, text: `devtrees: ${BUSY_WORDS[view.busy.action]}${what}`, tone: 'accent', tooltip: 'devtrees is working' }
+  if (row.busy !== null) {
+    const what = row.busy.service === null ? '' : ` ${row.busy.service}`
+    return { visible: true, text: `devtrees: ${BUSY_WORDS[row.busy.action]}${what}`, tone: 'accent', tooltip: 'devtrees is working' }
   }
-  if (view.kind === 'error' || view.stack === null) {
-    return { visible: true, text: 'devtrees: error', tone: 'danger', tooltip: view.message ?? 'devtrees failed' }
+  const stack = row.stack
+  if (stack === null) {
+    return { visible: true, text: 'devtrees: error', tone: 'danger', tooltip: repo.message ?? 'devtrees failed' }
   }
-  const stack = view.stack
-  const tooltip = `Stack ${stack.id}. Press to toggle the Ports sidebar.`
+  const tooltip = `${row.workspace.name}: stack ${stack.id}. Press to toggle the Ports sidebar.`
   if (stack.status === 'down') return { visible: true, text: 'devtrees: down', tone: 'neutral', tooltip }
   if (stack.status === 'unknown') return { visible: true, text: 'devtrees: not answering', tone: 'warning', tooltip }
   if (stack.status === 'partial') {

@@ -1,30 +1,24 @@
-// The plugin's worker: runs the devtrees CLI for the focused worktree, answers the panel, keeps
-// the status bar item current, and prunes the stacks of removed worktrees.
+// The plugin's worker: lists every local worktree with a devtrees.yaml and its stack, runs the
+// panel's actions in the path of the row pressed, keeps the status bar item current for the
+// focused row, and prunes the stacks of removed worktrees.
 // Orca starts it when the plugin is enabled (it has a status bar item) and restarts it on every
-// save, so nothing here needs to survive a restart: the stack itself runs detached.
+// save, so nothing here needs to survive a restart: the stacks themselves run detached.
 import type { OrcaWorkerApi } from 'orca/worker'
 import {
   args,
   failureOf,
   readLs,
+  repoLabel,
+  stackOf,
   statusBarOf,
   worktreeIdOf,
+  type LsRead,
   type Runner,
   type StatusBarState
 } from './devtrees'
-import {
-  parseTerminals,
-  pickOf,
-  pickSurvives,
-  resolve,
-  type Context,
-  type Listed,
-  type Pick,
-  type Resolution,
-  type TerminalRow
-} from './focus'
+import { parseTerminals, refOf, resolve, type Context, type Listed, type Resolution, type TerminalRow } from './focus'
 import { nodeRunner } from './node-runner'
-import type { InstanceView, StackAction, StackView, WorkspaceRef } from './protocol'
+import type { InstanceView, RepoView, RowView, StackAction, StackView, WorkspaceRef } from './protocol'
 
 let runner: Runner = nodeRunner
 
@@ -49,23 +43,44 @@ const isLocal = (w: Listed) => w.hostId === null || w.hostId === 'local'
 const trimSlash = (path: string) => (path.length > 1 ? path.replace(/\/+$/, '') : path)
 const firstLine = (text: string) => text.trim().split('\n')[0] ?? ''
 
-const UNRESOLVED_TEXT = {
-  ambiguous: 'More than one worktree matches the focused one. Pick the one you are in. Nothing runs until you do.',
-  'no-match': 'No worktree matches the focused one. Pick it below. Nothing runs until you do.'
-} as const
+/** What one `devtrees ls` in a repo gave. */
+type RepoRead =
+  | { kind: 'ok'; ls: LsRead }
+  | { kind: 'not-installed' }
+  | { kind: 'too-old' }
+  | { kind: 'error'; message: string }
+
+/** A local workspace with a devtrees.yaml, as one refresh found it. */
+interface Row {
+  ref: WorkspaceRef
+  /** Without a trailing slash: the key of `busy`, `lastError` and `commonDirs`. */
+  key: string
+  /** The git common dir, or `key` when git does not name one. */
+  repo: string
+  worktreeId: string
+}
+
+/**
+ * Which repos a refresh reads again: all of them, those without a running action (the poll),
+ * none (repost what is known), or one repo (after its action).
+ */
+type Reread = 'all' | 'idle' | 'none' | { repo: string }
 
 export default function activate(orca: OrcaWorkerApi): void {
   /** What `workspace.changed` last said; undefined until it first fires. */
   let context: Context | null | undefined
   /** Bumped on every `workspace.changed`: a resolution made for an older one is discarded. */
   let generation = 0
-  let focus: { generation: number; resolution: Resolution } | null = null
-  /** A worktree the person picked among candidates; see `pickSurvives`. */
-  let pick: Pick | null = null
-  /** Each local worktree's git common dir, by path: which repo it belongs to, for prune. */
+  let focus: { generation: number; resolution: Resolution; terminalsFailed: boolean } | null = null
+  /** Each local worktree's git common dir, by path: which repo it belongs to. */
   const commonDirs = new Map<string, string>()
-  const busy = new Map<string, NonNullable<StackView['busy']>>()
-  const lastError = new Map<string, NonNullable<StackView['lastError']>>()
+  /** The newest `ls` of each repo, with the number of the refresh that started it. */
+  const reads = new Map<string, { seq: number; read: RepoRead }>()
+  /** The rows the newest finished scan found. */
+  let rows: { seq: number; list: Row[] } = { seq: 0, list: [] }
+  let seq = 0
+  const busy = new Map<string, NonNullable<RowView['busy']>>()
+  const lastError = new Map<string, NonNullable<RowView['lastError']>>()
   let lastPosted = ''
   let lastStatus = ''
   let timer: ReturnType<typeof setInterval> | null = null
@@ -87,6 +102,8 @@ export default function activate(orca: OrcaWorkerApi): void {
     return workspaces as Listed[]
   }
 
+  const repoOf = (key: string) => commonDirs.get(key) ?? key
+
   /** The rows of `orca terminal list --json`, or null when it cannot be run or read. */
   async function listTerminals(): Promise<TerminalRow[] | null> {
     try {
@@ -95,49 +112,49 @@ export default function activate(orca: OrcaWorkerApi): void {
         orca.log(`orca terminal list failed: ${firstLine(result.stderr || result.stdout) || 'no output'}`)
         return null
       }
-      const rows = parseTerminals(result.stdout)
-      if (rows === null) orca.log('orca terminal list printed output this plugin cannot read')
-      return rows
+      const parsed = parseTerminals(result.stdout)
+      if (parsed === null) orca.log('orca terminal list printed output this plugin cannot read')
+      return parsed
     } catch (error) {
       orca.log(`orca terminal list failed: ${(error as Error).message}`)
       return null
     }
   }
 
-  async function resolveNow(): Promise<Resolution> {
-    if (context === undefined) {
-      context = (await orca.host.call('workspace.readContext')) as Context | null
-    }
-    const current = context
-    if (current === null) return { kind: 'none' }
-    // Only look terminals up when the context has some to match.
-    const terminals = current.terminals.length > 0 ? await listTerminals() : null
-    return resolve(current, terminals, await listWorkspaces(), pick)
-  }
-
-  /** The focused worktree for the current context, resolved again after each workspace.changed. */
-  async function currentFocus(): Promise<Resolution> {
+  /**
+   * The focused worktree, resolved again after each workspace.changed. Only highlights a row:
+   * nothing else reads it.
+   */
+  async function currentFocus(listed: Listed[]): Promise<NonNullable<typeof focus>> {
     for (;;) {
       const at = generation
-      if (focus !== null && focus.generation === at) return focus.resolution
-      const resolution = await resolveNow()
+      if (focus !== null && focus.generation === at) return focus
+      if (context === undefined) {
+        try {
+          context = (await orca.host.call('workspace.readContext')) as Context | null
+        } catch (error) {
+          orca.log(`workspace.readContext failed: ${(error as Error).message}`)
+          context = null
+        }
+      }
+      const current = context
+      // Only look terminals up when the context has some to match.
+      const terminals = current !== null && current.terminals.length > 0 ? await listTerminals() : []
+      const next = {
+        generation: at,
+        resolution: resolve(current, terminals, listed),
+        terminalsFailed: terminals === null
+      }
       if (at === generation) {
-        focus = { generation: at, resolution }
-        return resolution
+        focus = next
+        return next
       }
     }
   }
 
-  /** Records the git common dir of each local worktree not yet known. */
-  async function indexRepos(listed?: Listed[]): Promise<void> {
-    let workspaces: Listed[]
-    try {
-      workspaces = listed ?? (await listWorkspaces())
-    } catch (error) {
-      orca.log(`workspace.list failed: ${(error as Error).message}`)
-      return
-    }
-    const fresh = workspaces.filter((w) => isLocal(w) && w.kind === 'worktree' && !commonDirs.has(trimSlash(w.path)))
+  /** Records the git common dir of each local workspace not yet known. */
+  async function indexRepos(listed: Listed[]): Promise<void> {
+    const fresh = listed.filter((w) => isLocal(w) && !commonDirs.has(trimSlash(w.path)))
     await Promise.all(
       fresh.map(async (w) => {
         const result = await runner.run('git', COMMON_DIR, { cwd: w.path, timeoutMs: LOOKUP_TIMEOUT_MS })
@@ -147,50 +164,80 @@ export default function activate(orca: OrcaWorkerApi): void {
     )
   }
 
-  function base(
-    workspace: WorkspaceRef | null,
-    resolvedBy: StackView['resolvedBy'],
-    candidates: WorkspaceRef[],
-    exe: string
-  ): StackView {
-    return {
-      kind: 'ok',
-      workspace,
-      resolvedBy: workspace ? resolvedBy : null,
-      candidates,
-      message: null,
-      stack: null,
-      shared: null,
-      busy: workspace ? (busy.get(workspace.path) ?? null) : null,
-      lastError: workspace ? (lastError.get(workspace.path) ?? null) : null,
-      executable: exe
-    }
+  /** Every local workspace with a devtrees.yaml, in `workspace.list` order. */
+  async function scan(listed: Listed[]): Promise<Row[]> {
+    const local = listed.filter(isLocal)
+    await indexRepos(local)
+    const found = await Promise.all(
+      local.map(async (w): Promise<Row | null> => {
+        if (!(await runner.exists(`${w.path}/devtrees.yaml`))) return null
+        const key = trimSlash(w.path)
+        return {
+          ref: refOf(w),
+          key,
+          repo: repoOf(key),
+          worktreeId: worktreeIdOf(await runner.realpath(w.path), runner.sha256)
+        }
+      })
+    )
+    return found.filter((r): r is Row => r !== null)
   }
 
-  async function read(): Promise<StackView> {
-    const resolution = await currentFocus()
-    const exe = await executable()
-    if (resolution.kind === 'none') return { ...base(null, null, [], exe), kind: 'no-workspace' }
-    if (resolution.kind === 'unresolved') {
-      return {
-        ...base(null, null, resolution.candidates, exe),
-        kind: 'unresolved',
-        message: UNRESOLVED_TEXT[resolution.reason]
-      }
-    }
-    const workspace = resolution.workspace
-    const view = base(workspace, resolution.by, resolution.candidates, exe)
-    if (!(await runner.exists(`${workspace.path}/devtrees.yaml`))) return { ...view, kind: 'no-config' }
-    const result = await runner.run(exe, args.ls, { cwd: workspace.path })
+  /** Runs `devtrees ls` in one worktree: it lists every instance of that worktree's repo. */
+  async function readRepo(exe: string, cwd: string): Promise<RepoRead> {
+    const result = await runner.run(exe, args.ls, { cwd })
     if (result.code !== 0) {
       const failure = failureOf(result)
-      if (failure.kind !== 'error') return { ...view, kind: failure.kind }
-      return { ...view, kind: 'error', message: `${failure.code}: ${failure.message}` }
+      if (failure.kind !== 'error') return { kind: failure.kind }
+      return { kind: 'error', message: `${failure.code}: ${failure.message}` }
     }
-    const worktreeId = worktreeIdOf(await runner.realpath(workspace.path), runner.sha256)
-    const ls = readLs(result.stdout, worktreeId)
-    if (ls === null) return { ...view, kind: 'error', message: 'devtrees printed output this plugin cannot read' }
-    return { ...view, stack: ls.stack, shared: ls.shared }
+    const ls = readLs(result.stdout)
+    return ls === null ? { kind: 'error', message: 'devtrees printed output this plugin cannot read' } : { kind: 'ok', ls }
+  }
+
+  const repoBusy = (repo: string) => [...busy.keys()].some((key) => repoOf(key) === repo)
+
+  function rereads(reread: Reread, repo: string): boolean {
+    if (!reads.has(repo) || reread === 'all') return true
+    if (reread === 'none') return false
+    if (reread === 'idle') return !repoBusy(repo)
+    return reread.repo === repo
+  }
+
+  function build(list: Row[], found: NonNullable<typeof focus>, exe: string): StackView {
+    const groups = new Map<string, Row[]>()
+    for (const row of list) groups.set(row.repo, [...(groups.get(row.repo) ?? []), row])
+    let kind: StackView['kind'] = 'ok'
+    const repos: RepoView[] = []
+    for (const [repo, members] of groups) {
+      const read = reads.get(repo)?.read ?? { kind: 'error', message: 'Not read yet.' }
+      if (read.kind === 'not-installed') kind = 'not-installed'
+      else if (read.kind === 'too-old' && kind === 'ok') kind = 'too-old'
+      repos.push({
+        key: repo,
+        label: repoLabel(repo, members.map((m) => m.ref.project).find((p) => p !== null) ?? null),
+        kind: read.kind === 'error' ? 'error' : 'ok',
+        message: read.kind === 'error' ? read.message : null,
+        shared: read.kind === 'ok' ? read.ls.shared : null,
+        rows: members.map((m) => ({
+          workspace: m.ref,
+          stack: read.kind === 'ok' ? stackOf(read.ls, m.worktreeId) : null,
+          busy: busy.get(m.key) ?? null,
+          lastError: lastError.get(m.key) ?? null
+        }))
+      })
+    }
+    repos.sort((a, b) => a.label.localeCompare(b.label) || a.key.localeCompare(b.key))
+    const resolution = found.resolution
+    const focusedPath = resolution.kind === 'unique' ? trimSlash(resolution.workspace.path) : null
+    const focusedId = list.find((r) => r.key === focusedPath)?.ref.id ?? null
+    return {
+      kind,
+      repos,
+      focusedId,
+      focusUnknown: resolution.kind !== 'unique' && found.terminalsFailed,
+      executable: exe
+    }
   }
 
   async function showStatus(view: StackView): Promise<void> {
@@ -207,19 +254,33 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
   }
 
-  /** Reads the stack and tells every open panel and the status bar when it changed. */
-  async function refresh(): Promise<StackView> {
-    let view: StackView
-    for (let attempt = 0; ; attempt++) {
-      const at = generation
-      try {
-        view = await read()
-      } catch (error) {
-        view = { ...base(null, null, [], await executable()), kind: 'error', message: (error as Error).message }
-      }
-      // Focus moved while reading: what was read is for the old worktree.
-      if (at === generation || attempt >= 3) break
+  /** Lists the rows, reads their repos, and tells every open panel and the status bar. */
+  async function refresh(reread: Reread): Promise<StackView> {
+    const at = ++seq
+    const exe = await executable()
+    let listed: Listed[] | null = null
+    try {
+      listed = await listWorkspaces()
+    } catch (error) {
+      orca.log(`workspace.list failed: ${(error as Error).message}`)
     }
+    if (listed !== null) {
+      const list = await scan(listed)
+      if (at > rows.seq) rows = { seq: at, list }
+    }
+    const list = rows.list
+    const repos = [...new Map(list.map((r) => [r.repo, r])).values()]
+    await Promise.all(
+      repos
+        .filter((r) => rereads(reread, r.repo))
+        .map(async (r) => {
+          const read = await readRepo(exe, r.ref.path)
+          // A slower, older read never replaces a newer one.
+          if ((reads.get(r.repo)?.seq ?? 0) < at) reads.set(r.repo, { seq: at, read })
+        })
+    )
+    const found = await currentFocus(listed ?? [])
+    const view = build(rows.list, found, exe)
     if (stopped) return view
     const key = JSON.stringify(view)
     if (key !== lastPosted) {
@@ -230,8 +291,8 @@ export default function activate(orca: OrcaWorkerApi): void {
     return view
   }
 
-  async function run(path: string, action: StackAction, list: string[]) {
-    const result = await runner.run(await executable(), list, { cwd: path, detached: true })
+  async function run(cwd: string, key: string, action: StackAction, list: string[]) {
+    const result = await runner.run(await executable(), list, { cwd, detached: true })
     if (result.code === 0) return true
     const failure = failureOf(result)
     const code = failure.kind === 'error' ? failure.code : failure.kind === 'too-old' ? 'TOO_OLD' : 'NOT_INSTALLED'
@@ -241,83 +302,80 @@ export default function activate(orca: OrcaWorkerApi): void {
         : failure.kind === 'too-old'
           ? 'This devtrees is too old for the plugin. Upgrade it.'
           : 'The devtrees executable was not found.'
-    lastError.set(path, { action, code, message, at: Date.now() })
+    lastError.set(key, { action, code, message, at: Date.now() })
     return false
   }
 
-  async function act(path: string, action: StackAction, service: string | null, stack: InstanceView | null) {
-    lastError.delete(path)
-    busy.set(path, { action, service, since: Date.now() })
-    void refresh()
+  async function act(cwd: string, action: StackAction, service: string | null, stack: InstanceView | null) {
+    const key = trimSlash(cwd)
+    lastError.delete(key)
+    busy.set(key, { action, service, since: Date.now() })
+    void refresh('none')
     try {
-      if (action === 'up') await run(path, action, args.up())
-      else if (action === 'down') await run(path, action, args.down)
-      else if (action === 'restart-service' && service !== null) await run(path, action, args.restart(service))
+      if (action === 'up') await run(cwd, key, action, args.up())
+      else if (action === 'down') await run(cwd, key, action, args.down)
+      else if (action === 'restart-service' && service !== null) await run(cwd, key, action, args.restart(service))
       else if (action === 'restart') {
         // devtrees has no whole-stack restart: down, then up with the namespaces it had booted.
         const namespaces = stack?.status === 'down' ? [] : (stack?.namespaces ?? [])
-        if (await run(path, action, args.down)) await run(path, action, args.up(namespaces))
+        if (await run(cwd, key, action, args.down)) await run(cwd, key, action, args.up(namespaces))
       }
     } finally {
-      busy.delete(path)
-      await refresh()
+      busy.delete(key)
+      await refresh({ repo: repoOf(key) })
     }
   }
 
+  const refuse = (reason: string) => ({ started: false, reason })
+
   orca.panels.handle('stack.get', async (input) => {
     if (input?.refresh) focus = null
-    return refresh()
+    return refresh('all')
   })
 
-  orca.panels.handle('stack.action', async ({ action, service }) => {
-    // Resolve again: an action never runs on a resolution made before the last focus change.
-    focus = null
-    const at = generation
-    const view = await read()
-    if (view.kind === 'unresolved') {
-      return { started: false, reason: 'Pick the worktree first: Orca does not say which one is focused.' }
+  // Runs in the path of the pressed row, looked up again by its id: never the focused one.
+  orca.panels.handle('stack.action', async ({ workspaceId, action, service }) => {
+    let listed: Listed[]
+    try {
+      listed = await listWorkspaces()
+    } catch (error) {
+      return refuse(`Could not list workspaces: ${(error as Error).message}`)
     }
-    const path = view.workspace?.path
-    if (view.kind !== 'ok' || path === undefined) return { started: false, reason: 'No devtrees stack here.' }
-    if (at !== generation) return { started: false, reason: 'The focused worktree changed. Press again.' }
-    if (busy.has(path)) return { started: false, reason: 'Another action is still running.' }
-    if (action === 'restart-service') {
-      const known = view.stack?.services.find((s) => s.name === service)
-      if (!known) return { started: false, reason: `No isolated service named ${service ?? ''}.` }
+    const w = listed.find((x) => x.id === workspaceId)
+    if (w === undefined) return refuse('That worktree is no longer open in Orca.')
+    if (!isLocal(w)) return refuse('Only local worktrees are supported.')
+    if (!(await runner.exists(`${w.path}/devtrees.yaml`))) return refuse(`${w.name} has no devtrees.yaml.`)
+    let stack: InstanceView | null = null
+    if (action === 'restart' || action === 'restart-service') {
+      // Read the stack now: restart needs its namespaces, and a service must be one it runs.
+      const read = await readRepo(await executable(), w.path)
+      if (read.kind === 'error') return refuse(read.message)
+      if (read.kind !== 'ok') return refuse(read.kind === 'too-old' ? 'devtrees is too old. Upgrade it.' : 'devtrees was not found.')
+      stack = stackOf(read.ls, worktreeIdOf(await runner.realpath(w.path), runner.sha256))
+      if (action === 'restart-service' && !stack.services.some((s) => s.name === service && s.tier === 'isolated')) {
+        return refuse(`No isolated service named ${service ?? ''}.`)
+      }
     }
+    if (busy.has(trimSlash(w.path))) return refuse('Another action is still running in this worktree.')
     // Answer now: `up` can take minutes, longer than a panel request may wait.
-    void act(path, action, service ?? null, view.stack)
+    void act(w.path, action, service ?? null, stack)
     return { started: true, reason: null }
   })
 
-  orca.panels.handle('workspace.pick', async ({ workspaceId }) => {
-    const resolution = await currentFocus()
-    // Only a worktree on offer can be picked, and only while the context does not name one.
-    const offered = resolution.kind === 'unresolved' || (resolution.kind === 'unique' && resolution.by === 'pick')
-    if (offered && context && resolution.candidates.some((c) => c.id === workspaceId)) {
-      pick = pickOf(context, workspaceId)
-      focus = null
-    }
-    return refresh()
-  })
-
   // Fires on every focus change, also between workspaces whose payloads look the same, and when
-  // the focused workspace's terminals change. Always resolve again.
+  // the focused workspace's terminals change. Resolve the highlight again.
   orca.events.on('workspace.changed', async (payload) => {
-    const next = payload.context as Context | null
-    if (!pickSurvives(pick, next)) pick = null
-    context = next
+    context = payload.context as Context | null
     generation++
     focus = null
-    void indexRepos()
-    await refresh()
+    await refresh('idle')
   })
 
   orca.events.on('workspace.removed', async ({ path, kind }) => {
     if (kind !== 'worktree') return
     await prune(trimSlash(path))
     focus = null
-    await refresh()
+    await refresh('idle')
   })
 
   /**
@@ -352,6 +410,8 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
     target ??= sameRepo[0]
     commonDirs.delete(removedPath)
+    busy.delete(removedPath)
+    lastError.delete(removedPath)
     if (target === undefined) {
       orca.log(`prune skipped: no other worktree of ${repo} is open in Orca`)
       return
@@ -373,10 +433,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   async function stillListed(exe: string, cwd: string, worktreeId: string): Promise<boolean> {
-    const result = await runner.run(exe, args.ls, { cwd })
-    if (result.code !== 0) return false
-    const ls = readLs(result.stdout, worktreeId)
-    return ls !== null && ls.stack.status !== 'down'
+    const read = await readRepo(exe, cwd)
+    return read.kind === 'ok' && stackOf(read.ls, worktreeId).status !== 'down'
   }
 
   /** Polls for changes made outside the panel: agents and terminals running devtrees, crashes. */
@@ -385,22 +443,23 @@ export default function activate(orca: OrcaWorkerApi): void {
     timer = null
     const seconds = Number(await setting<number>('pollSeconds', DEFAULT_POLL_SECONDS))
     if (stopped || !(seconds > 0)) return
-    timer = setInterval(() => {
-      void indexRepos()
-      const resolution = focus?.resolution
-      if (resolution?.kind === 'unique' && !busy.has(resolution.workspace.path)) void refresh()
-    }, seconds * 1000)
+    // A repo with a running action is skipped: its action refreshes it when it ends.
+    timer = setInterval(() => void refresh('idle'), seconds * 1000)
     ;(timer as { unref?: () => void }).unref?.()
   }
 
   orca.settings.onDidChange(() => {
-    // `orcaPath` may have changed: resolve again.
+    // `orcaPath` may have changed: resolve the highlight again.
     focus = null
     void schedule()
-    void refresh()
+    void refresh('all')
   })
   void schedule()
-  void indexRepos()
+  // Learn each worktree's repo early, so a removal right after start can still be pruned.
+  void listWorkspaces().then(
+    (listed) => indexRepos(listed),
+    (error: Error) => orca.log(`workspace.list failed: ${error.message}`)
+  )
 
   deactivateHook = () => {
     stopped = true

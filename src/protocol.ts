@@ -20,7 +20,7 @@ export interface ServiceView {
   ports: PortView[]
 }
 
-/** One process-compose instance: this worktree's, or the shared one. */
+/** One process-compose instance: a worktree's, or the shared one. */
 export interface InstanceView {
   /** `up`: every service runs; `partial`: some are dead; `unknown`: the instance did not answer. */
   status: 'up' | 'partial' | 'down' | 'unknown'
@@ -41,43 +41,72 @@ export interface WorkspaceRef {
 
 export type StackAction = 'up' | 'down' | 'restart' | 'restart-service'
 
+export interface Busy {
+  action: StackAction
+  service: string | null
+  since: number
+}
+
+export interface ActionError {
+  action: StackAction
+  code: string
+  message: string
+  at: number
+}
+
+/** One worktree with a devtrees.yaml: a row of the panel. */
+export interface RowView {
+  workspace: WorkspaceRef
+  /** Its instance; null when its repo could not be read (see `RepoView.message`). */
+  stack: InstanceView | null
+  busy: Busy | null
+  lastError: ActionError | null
+}
+
+/** The rows of one repository, keyed by its git common dir. */
+export interface RepoView {
+  /** The git common dir; a worktree's own path when git could not name one. */
+  key: string
+  /** Orca's project name, else the main checkout's folder name. */
+  label: string
+  /** `error`: `devtrees ls` failed in this repo; `message` says why. */
+  kind: 'ok' | 'error'
+  message: string | null
+  rows: RowView[]
+  /** The repo's shared instance; null when it is not running or could not be read. */
+  shared: InstanceView | null
+}
+
 export interface StackView {
   /**
-   * `no-workspace`: nothing focused, or not a local worktree. `unresolved`: Orca's context does
-   * not name one worktree for certain; `candidates` lists the ones it could be, and nothing runs
-   * until the person picks one. `no-config`: no devtrees.yaml.
+   * `ok`: `repos` holds every local worktree with a devtrees.yaml; empty when there is none.
    * `not-installed`: the devtrees executable was not found. `too-old`: it lacks `ls --services`.
-   * `error`: devtrees failed; `message` says why. `ok`: `stack` and `shared` hold the stack.
    */
-  kind: 'no-workspace' | 'unresolved' | 'no-config' | 'not-installed' | 'too-old' | 'error' | 'ok'
-  workspace: WorkspaceRef | null
+  kind: 'ok' | 'not-installed' | 'too-old'
+  repos: RepoView[]
   /**
-   * How `workspace` was found: from the focused terminals, from a unique name and branch, or
-   * from the person's pick. Null when there is no workspace.
+   * The workspace id of the focused row, only when Orca's context names one worktree for
+   * certain. Used to highlight it, never to choose where an action runs.
    */
-  resolvedBy: 'terminals' | 'name' | 'pick' | null
-  /** Workspaces the focused one could be, when Orca's context does not name one for certain. */
-  candidates: WorkspaceRef[]
-  message: string | null
-  stack: InstanceView | null
-  shared: InstanceView | null
-  busy: { action: StackAction; service: string | null; since: number } | null
-  lastError: { action: StackAction; code: string; message: string; at: number } | null
+  focusedId: string | null
+  /** The orca CLI could not be run, and focus did not resolve without it. */
+  focusUnknown: boolean
   /** The executable the worker runs, from the plugin settings. */
   executable: string
 }
 
 declare module 'orca' {
   interface PluginRequests {
-    /** The focused worktree's stack, read fresh. */
+    /** Every row and its stack, read fresh. */
     'stack.get': { input: { refresh?: boolean }; output: StackView }
-    /** Starts an action in the background; `stack.changed` reports its progress and result. */
+    /**
+     * Starts an action in the background in the given workspace's path; `stack.changed`
+     * reports its progress and result.
+     */
     'stack.action': {
-      input: { action: StackAction; service?: string }
+      input: { workspaceId: string; action: StackAction; service?: string }
       output: { started: boolean; reason: string | null }
     }
-    /** Picks one of `candidates` as the focused worktree. */
-    'workspace.pick': { input: { workspaceId: string }; output: StackView }
   }
   interface PluginPanelEvents {
     'stack.changed': StackView
