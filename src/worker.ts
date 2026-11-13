@@ -105,6 +105,28 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   const repoOf = (key: string) => commonDirs.get(key) ?? key
 
+  /**
+   * Opens a visible, focused terminal tab with the orca CLI. False when the CLI cannot be run
+   * or does not answer `ok: true`, so the caller falls back to the host call.
+   */
+  async function createVisibleTerminal(path: string, title: string, command: string): Promise<boolean> {
+    try {
+      const argv = ['terminal', 'create', '--worktree', `path:${path}`, '--title', title, '--command', command, '--focus', '--json']
+      const result = await runner.run(await orcaExecutable(), argv, { cwd: '/', timeoutMs: LOOKUP_TIMEOUT_MS })
+      if (result.code !== 0) {
+        orca.log(`orca terminal create failed: ${firstLine(result.stderr || result.stdout) || 'no output'}`)
+        return false
+      }
+      const doc = JSON.parse(result.stdout) as { ok?: unknown } | null
+      if (doc?.ok === true) return true
+      orca.log('orca terminal create did not answer ok')
+      return false
+    } catch (error) {
+      orca.log(`orca terminal create failed: ${(error as Error).message}`)
+      return false
+    }
+  }
+
   /** The rows of `orca terminal list --json`, or null when it cannot be run or read. */
   async function listTerminals(): Promise<TerminalRow[] | null> {
     try {
@@ -381,7 +403,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     const where = isShared ? repoLabel(repoOf(trimSlash(w.path)), refOf(w).project) : w.name
     const { command, title } = terminalCommand(await executable(), what, { service: service ?? null, shared: isShared, where })
     try {
-      await orca.host.call('terminal.create', { workspaceId: w.id, title, command })
+      if (!(await createVisibleTerminal(w.path, title, command))) {
+        // `terminal.create` opens a background terminal with no tab, so it is only the fallback.
+        orca.log('opened the terminal with the host terminal.create fallback; it may have no tab')
+        await orca.host.call('terminal.create', { workspaceId: w.id, title, command })
+      }
     } catch (error) {
       return refuse(`Could not open a terminal: ${(error as Error).message}`)
     }

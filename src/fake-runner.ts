@@ -84,6 +84,8 @@ export class FakeRunner implements Runner {
   replies = new Map<string, Reply>()
   /** What `orca terminal list --json` lists; null makes it fail. */
   terminals: ReturnType<typeof terminal>[] | null = []
+  /** What `orca terminal create` answers: a visible tab, a failure, or output that is not ok. */
+  terminalCreate: 'ok' | 'fail' | 'not-ok' = 'ok'
   /** `git rev-parse --git-common-dir` by cwd; a cwd not listed fails as outside a repo. */
   commonDirs = new Map<string, string>()
   /**
@@ -115,6 +117,12 @@ export class FakeRunner implements Runner {
   }
 
   private lookup(call: Call): Partial<RunResult> | null {
+    if (call.args[0] === 'terminal' && call.args[1] === 'create') {
+      if (this.terminalCreate === 'fail') return { code: 1, stderr: 'orca: not running' }
+      const ok = this.terminalCreate === 'ok'
+      const doc = { id: 'x', ok, result: { terminal: { surface: 'visible', tabId: 'tab_1', handle: 'term_new' } } }
+      return { code: 0, stdout: `${JSON.stringify(doc)}\n` }
+    }
     if (call.args[0] === 'terminal') {
       if (this.terminals === null) return { code: 1, stderr: 'orca: not running' }
       const doc = { id: 'x', ok: true, result: { terminals: this.terminals } }

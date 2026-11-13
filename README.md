@@ -60,11 +60,14 @@ orca plugin dev load /path/to/orca-devtrees
 - **trusted-worker**: a Node process that runs CLIs with your user account's access:
   - `devtrees` in your worktrees;
   - `orca terminal list --json`, to find which worktree the focused terminals are in;
+  - `orca terminal create --focus --json`, to open the Attach and Logs terminals as visible tabs;
   - `git rev-parse --git-common-dir` in each local worktree, to know which repo it belongs to.
 - `workspace:read`: the list of workspaces, to find the rows; the focused workspace's name,
   branch and terminal ids, to highlight its row; and the `workspace.removed` event, to prune.
 - `settings:own`: the three settings above.
-- `terminal:send`: to open the Attach and Logs terminals with `terminal.create`. Orca
+- `terminal:send`: to open the Attach and Logs terminals with `terminal.create`, only when
+  the `orca terminal create` CLI call fails (the host call opens a background terminal with no
+  tab, so it is a fallback). Orca
   describes this capability as "Type and run commands in your terminals, local and SSH", which
   is broader than what the plugin does: it only opens new terminals in local worktrees, running
   `devtrees attach` or `devtrees logs`. It never types into an existing terminal.

@@ -343,7 +343,16 @@ test('restarts one isolated service of the pressed row, and refuses names its st
 
 // Terminals: attach and logs.
 
-const created = (w: TestWorker) => w.host.callsOf('terminal.create') as { workspaceId: string; title: string; command: string }[]
+const hostCreated = (w: TestWorker) => w.host.callsOf('terminal.create') as { workspaceId: string; title: string; command: string }[]
+/** The terminals opened through the orca CLI, as the worktree path, title and command it got. */
+const created = (runner: FakeRunner) =>
+  runner.calls
+    .filter((c) => c.args[0] === 'terminal' && c.args[1] === 'create')
+    .map((c) => ({
+      path: c.args[c.args.indexOf('--worktree') + 1].replace(/^path:/, ''),
+      title: c.args[c.args.indexOf('--title') + 1],
+      command: c.args[c.args.indexOf('--command') + 1]
+    }))
 
 test('Attach and Logs open a terminal in the pressed row, whatever is focused', async () => {
   const runner = machine()
@@ -357,36 +366,40 @@ test('Attach and Logs open a terminal in the pressed row, whatever is focused', 
     { workspaceId: MAIN_ROW.id, what: 'logs', service: 'cache', shared: true }
   ] as const
   for (const input of opens) assert.deepEqual(await w.request('terminal.open', input), { started: true, reason: null })
-  assert.deepEqual(created(w), [
-    { workspaceId: OTHER_ROW.id, title: 'devtrees attach (main)', command: 'devtrees attach' },
-    { workspaceId: OTHER_ROW.id, title: 'devtrees logs (main)', command: 'devtrees logs -f --all' },
-    { workspaceId: MAIN_ROW.id, title: 'devtrees logs web (main)', command: 'devtrees logs -f web' },
-    { workspaceId: MAIN_ROW.id, title: 'devtrees attach --shared (app)', command: 'devtrees attach --shared' },
-    { workspaceId: MAIN_ROW.id, title: 'devtrees logs --shared cache (app)', command: 'devtrees logs -f --shared cache' }
+  assert.deepEqual(created(runner), [
+    { path: OTHER, title: 'devtrees attach (main)', command: 'devtrees attach' },
+    { path: OTHER, title: 'devtrees logs (main)', command: 'devtrees logs -f --all' },
+    { path: MAIN_PATH, title: 'devtrees logs web (main)', command: 'devtrees logs -f web' },
+    { path: MAIN_PATH, title: 'devtrees attach --shared (app)', command: 'devtrees attach --shared' },
+    { path: MAIN_PATH, title: 'devtrees logs --shared cache (app)', command: 'devtrees logs -f --shared cache' }
   ])
+  assert.deepEqual(hostCreated(w), [])
   assert.deepEqual(w.refusals, [])
   // Nothing runs devtrees in the worker for these.
   assert.deepEqual(actionCalls(runner), [])
 })
 
 test('a terminal opens in the pressed row when focus does not resolve', async () => {
-  const w = await start(machine(), { context: twins })
+  const runner = machine()
+  const w = await start(runner, { context: twins })
   await w.request('terminal.open', { workspaceId: FEATURE_ROW.id, what: 'logs', service: 'worker' })
-  assert.deepEqual(created(w), [{ workspaceId: FEATURE_ROW.id, title: 'devtrees logs worker (feature-x)', command: 'devtrees logs -f worker' }])
+  assert.deepEqual(created(runner), [{ path: PATH, title: 'devtrees logs worker (feature-x)', command: 'devtrees logs -f worker' }])
 })
 
 test('quotes the executable and odd service names', async () => {
-  const w = await start(machine(), { settings: { devtreesPath: "/opt/my tools/devtrees" } })
+  const runner = machine()
+  const w = await start(runner, { settings: { devtreesPath: "/opt/my tools/devtrees" } })
   await w.request('terminal.open', { workspaceId: FEATURE_ROW.id, what: 'logs', service: "it's; rm -rf ~" })
   await w.request('terminal.open', { workspaceId: FEATURE_ROW.id, what: 'logs', service: '$(touch x)`y`' })
-  assert.deepEqual(created(w).map((c) => c.command), [
+  assert.deepEqual(created(runner).map((c) => c.command), [
     `'/opt/my tools/devtrees' logs -f 'it'\\''s; rm -rf ~'`,
     `'/opt/my tools/devtrees' logs -f '$(touch x)\`y\`'`
   ])
 })
 
 test('refuses a terminal for a workspace that is gone, remote, or has no devtrees.yaml', async () => {
-  const w = await start(machine())
+  const runner = machine()
+  const w = await start(runner)
   for (const [workspaceId, reason] of [
     ['identity:wt2:local:unknown', /no longer open/],
     [REMOTE_ROW.id, /Only local worktrees/],
@@ -397,11 +410,37 @@ test('refuses a terminal for a workspace that is gone, remote, or has no devtree
     assert.match(answer.reason ?? '', reason)
   }
   assert.equal((await w.request('terminal.open', { workspaceId: MAIN_ROW.id, what: 'attach', service: 'web' })).started, false)
-  assert.deepEqual(created(w), [])
+  assert.deepEqual(created(runner), [])
+  assert.deepEqual(hostCreated(w), [])
+})
+
+test('opens a visible, focused tab with this exact orca argv', async () => {
+  const runner = machine()
+  const w = await start(runner, { settings: { orcaPath: '/opt/orca' } })
+  await w.request('terminal.open', { workspaceId: FEATURE_ROW.id, what: 'attach' })
+  const call = runner.calls.find((c) => c.args[0] === 'terminal' && c.args[1] === 'create')
+  assert.equal(call?.executable, '/opt/orca')
+  assert.deepEqual(call?.args, [
+    'terminal', 'create', '--worktree', `path:${PATH}`,
+    '--title', 'devtrees attach (feature-x)', '--command', 'devtrees attach', '--focus', '--json'
+  ])
+  assert.deepEqual(hostCreated(w), [])
+})
+
+test('falls back to the host terminal.create when the orca CLI fails or is not ok', async () => {
+  for (const mode of ['fail', 'not-ok'] as const) {
+    const runner = machine()
+    runner.terminalCreate = mode
+    const w = await start(runner)
+    assert.deepEqual(await w.request('terminal.open', { workspaceId: FEATURE_ROW.id, what: 'attach' }), { started: true, reason: null })
+    assert.deepEqual(hostCreated(w), [{ workspaceId: FEATURE_ROW.id, title: 'devtrees attach (feature-x)', command: 'devtrees attach' }])
+  }
 })
 
 test('reports a terminal Orca could not open', async () => {
-  const w = await start(machine())
+  const runner = machine()
+  runner.terminalCreate = 'fail'
+  const w = await start(runner)
   w.host.respond('terminal.create', () => {
     throw new Error('no window')
   })
