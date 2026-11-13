@@ -1,6 +1,6 @@
 // What the panel shows, as pure functions of the view: status dots, the order of rows, and short
 // port labels. Kept apart from src/panel.tsx so tests read them without drawing.
-import type { InstanceView, PortView, RowView, ServiceView } from './protocol'
+import type { InstanceView, PortView, RepoView, RowView, ServiceView, StackView } from './protocol'
 
 /** A status dot's color: green, amber, red or grey. */
 export type Dot = 'success' | 'warning' | 'danger' | 'neutral'
@@ -52,23 +52,70 @@ export function isFolded(row: RowView, focusedId: string | null): boolean {
   )
 }
 
-/** A repo's rows split into those shown, focused first, and those folded away. */
-export function splitRows(rows: RowView[], focusedId: string | null): { shown: RowView[]; folded: RowView[] } {
-  const shown = rows.filter((r) => !isFolded(r, focusedId))
-  const focused = shown.filter((r) => r.workspace.id === focusedId)
-  return {
-    shown: [...focused, ...shown.filter((r) => r.workspace.id !== focusedId)],
-    folded: rows.filter((r) => isFolded(r, focusedId))
-  }
+/** What a worktree is called in the panel: its branch, else its Orca name. */
+export const nameOf = (row: RowView): string => row.workspace.branch ?? row.workspace.name
+
+/** A worktree and the repo it belongs to. */
+export interface Placed {
+  repo: RepoView
+  row: RowView
 }
 
-/** Services that are running, for "Shared · 1 running". */
-export const runningCount = (instance: InstanceView) => instance.services.filter((s) => s.state === 'active').length
+/** One line of the list below the focused worktree. */
+export type ListEntry = ({ kind: 'row' } & Placed) | { kind: 'shared'; repo: RepoView }
 
-/** The branch, when it says something the name does not. */
-export function branchNote(row: RowView): string | null {
-  const { branch, name } = row.workspace
-  return branch !== null && branch !== name ? branch : null
+/**
+ * The panel's three parts: the focused worktree, only when focus is known; the other stacks that
+ * run (or are busy, failed or unreadable), each repo's rows followed by its running shared
+ * instance; and the stopped rows, folded into one line. The focused repo's shared instance is
+ * not listed: the focused worktree already shows its services.
+ */
+export function layoutOf(v: StackView): { focused: Placed | null; running: ListEntry[]; stopped: Placed[] } {
+  const focusedId = v.focusUnknown ? null : v.focusedId
+  let focused: Placed | null = null
+  const running: ListEntry[] = []
+  const stopped: Placed[] = []
+  for (const repo of v.repos) {
+    for (const row of repo.rows) {
+      if (focusedId !== null && row.workspace.id === focusedId) focused = { repo, row }
+      else if (isFolded(row, focusedId)) stopped.push({ repo, row })
+      else running.push({ kind: 'row', repo, row })
+    }
+    if (repo.shared !== null && repo.shared.status !== 'down' && focused?.repo !== repo) running.push({ kind: 'shared', repo })
+  }
+  return { focused, running, stopped }
+}
+
+/** One service line: the service, whether it is the repo's shared one, and whether it is known only by name. */
+export interface ServiceLine {
+  service: ServiceView
+  shared: boolean
+  /** A stopped stack lists no services: its names come from a sibling worktree, greyed. */
+  placeholder: boolean
+}
+
+const asPlaceholder = (s: ServiceView): ServiceView => ({ ...s, status: 'Stopped', state: 'done', health: 'unknown', ports: [] })
+
+/**
+ * The services of a worktree: its isolated ones, then with `withShared` the repo's shared
+ * instance's. A stopped stack lists none, so their names are borrowed, greyed, from another
+ * worktree of the repo that lists some; the shared ones come from the shared instance when it
+ * runs, whatever the worktree's own state.
+ */
+export function serviceLines(repo: RepoView, row: RowView, withShared: boolean): ServiceLine[] {
+  const own = row.stack?.services ?? []
+  const borrowing = own.length === 0 && row.stack?.status === 'down'
+  const sibling = borrowing ? repo.rows.find((r) => r !== row && (r.stack?.services.length ?? 0) > 0)?.stack?.services ?? [] : []
+  const source = borrowing ? sibling : own
+  const line = (shared: boolean) => (s: ServiceView): ServiceLine =>
+    borrowing ? { service: asPlaceholder(s), shared, placeholder: true } : { service: s, shared, placeholder: false }
+  const isolated = source.filter((s) => s.tier === 'isolated').map(line(false))
+  if (!withShared) return isolated
+  const shared =
+    repo.shared !== null && repo.shared.status !== 'down'
+      ? repo.shared.services.map((s): ServiceLine => ({ service: s, shared: true, placeholder: false }))
+      : source.filter((s) => s.tier === 'shared').map(line(true))
+  return [...isolated, ...shared]
 }
 
 /**

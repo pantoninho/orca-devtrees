@@ -1,76 +1,92 @@
 // `orca plugin check` renders the panel once per scenario. `requests` stands in for the worker,
 // whose devtrees CLI is not available to check.
 import { defineCheck } from 'orca/testing'
-import type { InstanceView, RepoView, RowView, StackView } from './protocol'
+import type { InstanceView, RepoView, RowView, ServiceView, StackView } from './protocol'
 
+const svc = (name: string, ports: [string, number][], change: Partial<ServiceView> = {}): ServiceView => ({
+  name,
+  status: 'Running',
+  state: 'active',
+  health: 'ready',
+  tier: 'isolated',
+  ports: ports.map(([n, port]) => ({ name: n, port })),
+  ...change
+})
+
+/** web, api and worker; with `dead`, worker has exited. */
 const running = (id: string, port: number, dead = false): InstanceView => ({
   status: dead ? 'partial' : 'up',
   id,
   namespaces: ['default'],
   services: [
-    { name: 'web', status: 'Running', state: 'active', health: 'ready', tier: 'isolated', ports: [{ name: 'WEB_PORT', port }] },
-    {
-      name: 'api',
-      status: 'Running',
-      state: 'active',
-      health: 'unknown',
-      tier: 'isolated',
-      ports: [
-        { name: 'API_HTTP_PORT', port: port + 1 },
-        { name: 'API_DEBUG_PORT', port: port + 2 }
-      ]
-    },
-    { name: 'worker', status: dead ? 'Completed' : 'Running', state: dead ? 'dead' : 'active', health: 'unknown', tier: 'isolated', ports: [] }
+    svc('web', [['WEB_PORT', port]]),
+    svc('api', [['API_HTTP_PORT', port + 1], ['API_DEBUG_PORT', port + 2]], { health: 'unknown' }),
+    svc('worker', [], dead ? { status: 'Completed', state: 'dead', health: 'unknown' } : { health: 'unknown' })
   ]
 })
 const stopped = (id: string): InstanceView => ({ status: 'down', id, namespaces: [], services: [] })
-/** A shared instance with many ports on one service. */
-const shared: InstanceView = {
+/** The fixture repo's shared tier: one cache. */
+const fixtureShared: InstanceView = {
+  status: 'up',
+  id: 'shared',
+  namespaces: ['default'],
+  services: [svc('cache', [['CACHE_PORT', 50000]], { tier: 'shared', health: 'unknown' })]
+}
+/** demo-app's shared tier: a database with many ports. */
+const demoShared: InstanceView = {
   status: 'up',
   id: 'shared',
   namespaces: ['default'],
   services: [
-    {
-      name: 'db',
-      status: 'Running',
-      state: 'active',
-      health: 'ready',
-      tier: 'shared',
-      ports: [
-        { name: 'APP_SHARED_DB_PORT', port: 50000 },
-        { name: 'APP_SHARED_DB_SHADOW_PORT', port: 50001 },
-        { name: 'APP_SHARED_DB_POOLER_PORT', port: 50002 },
-        { name: 'APP_SHARED_API_PORT', port: 50003 },
-        { name: 'APP_SHARED_STUDIO_PORT', port: 50004 },
-        { name: 'APP_SHARED_INBUCKET_PORT', port: 50005 }
-      ]
-    },
-    { name: 'cache', status: 'Running', state: 'active', health: 'unknown', tier: 'shared', ports: [{ name: 'CACHE_PORT', port: 50010 }] }
+    svc(
+      'db',
+      [
+        ['DEMO_SHARED_DB_PORT', 51000],
+        ['DEMO_SHARED_DB_SHADOW_PORT', 51001],
+        ['DEMO_SHARED_API_PORT', 51002],
+        ['DEMO_SHARED_STUDIO_PORT', 51003]
+      ],
+      { tier: 'shared' }
+    )
   ]
 }
-const rowOf = (n: number, name: string, path: string, stack: InstanceView | null, project: string | null, branch = name): RowView => ({
+const rowOf = (n: number, name: string, path: string, stack: InstanceView | null, project: string, branch: string | null = name): RowView => ({
   workspace: { id: `identity:wt2:local:${n}`, name, path, branch, project },
   stack,
   busy: null,
   lastError: null
 })
 
-const APP_MAIN = rowOf(1, 'main', '/work/app', running('app-3f9c2a1b', 41230), 'app')
-const FEATURE = rowOf(2, 'feature-x', '/work/app-wt/feature-x', running('feature-x-8d0e1f22', 41330, true), 'app', 'feat/checkout-flow')
-const STOPPED = ['fix-login', 'docs-pass', 'bump-deps', 'try-cache', 'old-spike'].map((name, i) =>
-  rowOf(10 + i, name, `/work/app-wt/${name}`, stopped(`${name}-0a1b2c3${i}`), 'app')
+const FIXTURE_MAIN = rowOf(1, 'main', '/work/devtrees-fixture', running('main-3f9c2a1b', 41230), 'devtrees-fixture')
+const FIXTURE_DOCS = rowOf(2, 'docs-pass', '/work/devtrees-fixture-wt/docs-pass', stopped('docs-pass-0a1b2c30'), 'devtrees-fixture')
+const FEAT_X = rowOf(3, 'feat-x', '/work/demo-app-wt/feat-x', running('feat-x-8d0e1f22', 42330), 'demo-app')
+const FIX_Y = rowOf(4, 'fix-y', '/work/demo-app-wt/fix-y', running('fix-y-8d0e1f23', 42430, true), 'demo-app')
+const STOPPED = ['fix-login', 'bump-deps', 'try-cache', 'old-spike', 'refactor'].map((name, i) =>
+  rowOf(10 + i, name, `/work/demo-app-wt/${name}`, stopped(`${name}-0a1b2c3${i}`), 'demo-app')
 )
-const OTHER_MAIN = rowOf(4, 'main', '/work/other', running('other-77aa88bb', 42230), 'other')
-const OTHER_IDLE = rowOf(5, 'refactor', '/work/other-wt/refactor', stopped('refactor-11aa22bb'), 'other')
 
-const appRepo: RepoView = { key: '/work/app/.git', label: 'app', kind: 'ok', message: null, shared, rows: [APP_MAIN, ...STOPPED, FEATURE] }
-const otherRepo: RepoView = { key: '/work/other/.git', label: 'other', kind: 'ok', message: null, shared: null, rows: [OTHER_MAIN, OTHER_IDLE] }
+const fixture: RepoView = {
+  key: '/work/devtrees-fixture/.git',
+  label: 'devtrees-fixture',
+  kind: 'ok',
+  message: null,
+  shared: fixtureShared,
+  rows: [FIXTURE_MAIN, FIXTURE_DOCS]
+}
+const demo: RepoView = {
+  key: '/work/demo-app/.git',
+  label: 'demo-app',
+  kind: 'ok',
+  message: null,
+  shared: demoShared,
+  rows: [FEAT_X, FIX_Y, ...STOPPED]
+}
 
-/** Two repos, each with a "main"; feature-x is focused. */
+/** devtrees-fixture's main is focused and up; demo-app runs two worktrees and its shared instance; six are stopped. */
 const many: StackView = {
   kind: 'ok',
-  repos: [appRepo, otherRepo],
-  focusedId: FEATURE.workspace.id,
+  repos: [fixture, demo],
+  focusedId: FIXTURE_MAIN.workspace.id,
   focusUnknown: false,
   executable: 'devtrees'
 }
@@ -83,32 +99,26 @@ const withRow = (v: StackView, id: string, change: Partial<RowView>): StackView 
 const answer = (view: StackView) => ({ 'stack.get': () => view })
 
 export default defineCheck({
-  /** feature-x is focused and open; five stopped rows fold into one line. */
-  focused: { requests: answer(many) },
-  /** One running and many stopped, nothing focused. */
-  oneRunning: {
-    requests: answer({ ...many, repos: [{ ...appRepo, rows: [APP_MAIN, ...STOPPED] }], focusedId: null })
+  /** The focused worktree runs: title, actions, its services and the shared cache; below, running others and a shared instance. */
+  focusedRunning: { requests: answer(many) },
+  /** The focused worktree is stopped: its services greyed, borrowed from a sibling; only Up stands out. */
+  focusedDown: {
+    requests: answer({ ...many, repos: [fixture, demo], focusedId: FIXTURE_DOCS.workspace.id })
   },
-  /** A focused row that is stopped stays out of the fold. */
-  focusedStopped: { requests: answer({ ...many, focusedId: STOPPED[0].workspace.id }) },
-  /**
-   * A shared instance with many ports. Its section starts closed and a check cannot open it, so
-   * the focused row runs a service with the same many ports to show how they wrap.
-   */
-  manyPorts: {
-    requests: answer(
-      withRow(many, FEATURE.workspace.id, {
-        stack: { ...running('feature-x-8d0e1f22', 41330), services: [...running('feature-x-8d0e1f22', 41330).services, { ...shared.services[0], tier: 'isolated' }] }
-      })
-    )
-  },
-  orcaMissing: { requests: answer({ ...many, focusedId: null, focusUnknown: true }) },
+  /** Nothing focused: only the running list and the stopped line. */
+  noFocus: { requests: answer({ ...many, focusedId: null }) },
+  /** The orca CLI could not be run: like no focus, with a note. */
+  focusUnknown: { requests: answer({ ...many, focusedId: null, focusUnknown: true }) },
+  /** Running others and a shared instance, the focused repo's shared one not repeated. */
+  runningWithShared: { requests: answer({ ...many, repos: [fixture, { ...demo, rows: [FEAT_X, FIX_Y] }] }) },
+  /** Only stopped worktrees besides the focused one: one dim "N stopped" line. */
+  onlyStopped: { requests: answer({ ...many, repos: [fixture, { ...demo, shared: null, rows: STOPPED }] }) },
   busy: {
-    requests: answer(withRow(many, FEATURE.workspace.id, { busy: { action: 'up', service: null, since: 0 } }))
+    requests: answer(withRow(many, FIXTURE_MAIN.workspace.id, { busy: { action: 'up', service: null, since: 0 } }))
   },
   failed: {
     requests: answer(
-      withRow(many, FEATURE.workspace.id, {
+      withRow(many, FIXTURE_MAIN.workspace.id, {
         lastError: { action: 'up', code: 'HEALTH_TIMEOUT', message: 'web did not become healthy within 120s.', at: 0 }
       })
     )
@@ -116,10 +126,7 @@ export default defineCheck({
   repoError: {
     requests: answer({
       ...many,
-      repos: [
-        appRepo,
-        { ...otherRepo, kind: 'error', message: 'CONFIG_INVALID: devtrees.yaml is malformed', rows: otherRepo.rows.map((r) => ({ ...r, stack: null })) }
-      ]
+      repos: [fixture, { ...demo, kind: 'error', message: 'CONFIG_INVALID: devtrees.yaml is malformed', shared: null, rows: demo.rows.map((r) => ({ ...r, stack: null })) }]
     })
   },
   empty: { requests: answer({ ...many, repos: [], focusedId: null }) },

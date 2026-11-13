@@ -5,20 +5,22 @@ which runs a process-compose stack per git worktree without port collisions.
 
 ## What it does
 
-- **Services panel** in the right sidebar, listing every local worktree open in Orca that has
-  a `devtrees.yaml`, grouped by repo (named after Orca's project on Orca 1.4.256 and newer,
-  otherwise after the main checkout's folder):
-  - one line per worktree: a status dot, its name, and its branch when that differs. Running
-    and focused rows come first; the other stopped rows fold into one "N stopped" line;
-  - a row opens to show Up, Down, Restart, Logs (`devtrees logs -f --all`) and Attach
-    (`devtrees attach`), and its services: a status dot each (green healthy, amber starting or
-    no health check, red dead, grey stopped), with Logs (`devtrees logs -f <service>`) and, for
-    isolated services, Restart. Ports show on one line with short names, such as
-    `web :41230 · api :41231`, each a `localhost` link that opens in the browser. Logs and
-    Attach open an Orca terminal in that row's worktree;
-  - each repo's shared instance on one line, such as "Shared · 1 running", which opens to show
-    its services, Attach (`devtrees attach --shared`) and Logs for each shared service
-    (`devtrees logs -f --shared <service>`).
+- **Services panel** in the right sidebar, for every local worktree open in Orca that has a
+  `devtrees.yaml`. Each is named `<repo> · <branch>`, the repo after Orca's project on Orca
+  1.4.256 and newer, otherwise after the main checkout's folder:
+  - the focused worktree first, always open: Up, Down, Restart, Logs (`devtrees logs -f --all`)
+    and Attach (`devtrees attach`), then one line per service: a status dot (green healthy,
+    amber starting or no health check, red dead, grey stopped), its name, its ports on one line
+    (`:41230`, or `http :41231 debug :41232`, each a `localhost` link), a `shared` tag for the
+    repo's shared services, and Logs (`devtrees logs -f <service>`), Attach and, for isolated
+    services, Restart. When the stack is down, its services are greyed (their names come from
+    another worktree of the repo) and only Up stands out;
+  - below, a flat list of the other stacks that run, with a dot per service, and each repo's
+    running shared instance as `<repo> · shared` (Attach runs `devtrees attach --shared`).
+    A line opens in place to show the same actions and services;
+  - every other stopped worktree folds into one muted "N stopped" line, which opens to list
+    them, each with Up. Stopped stacks are muted everywhere: grey text, hollow dots.
+  Logs and Attach open an Orca terminal in that line's worktree.
 - **Auto-prune.** When Orca removes a worktree, the plugin runs `devtrees prune` from another
   worktree of the same repo, so the removed worktree's instance does not keep running. It never
   prunes other repos.
@@ -92,9 +94,9 @@ a branch, such as `main` on `main`. The plugin looks for the focused row this wa
    worktree.
 2. If no terminal matches (no terminals are open, or the orca CLI fails), it looks for a
    workspace with the same name and branch, and uses it only if exactly one matches.
-3. Otherwise nothing is highlighted and the status bar item is hidden. Nothing else changes.
+3. Otherwise no worktree is shown as focused and the status bar item is hidden. Nothing else changes.
 
-The highlighted row is opened by default and is never folded. A row or section you open or
+The focused worktree is shown first, always open. A line you open or
 close stays that way, also across a hot reload of the panel.
 
 ## How it prunes
