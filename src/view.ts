@@ -5,11 +5,18 @@ import type { InstanceView, PortView, RepoView, RowView, ServiceView, StackView 
 /** A status dot's color: green, amber, red or grey. */
 export type Dot = 'success' | 'warning' | 'danger' | 'neutral'
 
-/** Green: running and healthy. Amber: starting, or running with unknown health. Red: dead. Grey: stopped. */
+/** process-compose statuses of a service on its way up, or down: not yet, or no longer, serving. */
+const TRANSITIONS = new Set(['pending', 'launching', 'launched', 'restarting', 'terminating'])
+
+/**
+ * Green: running, healthy or without a readiness probe (the usual case). Amber: not ready yet,
+ * or starting, restarting or stopping. Red: dead. Grey: stopped.
+ */
 export function serviceDot(service: ServiceView): Dot {
   if (service.state === 'dead') return 'danger'
   if (service.state === 'done') return 'neutral'
-  return service.health === 'ready' ? 'success' : 'warning'
+  if (service.health === 'not_ready' || TRANSITIONS.has(service.status.toLowerCase())) return 'warning'
+  return 'success'
 }
 
 /** A worktree row's dot, from its action, last error and stack. */

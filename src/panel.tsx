@@ -12,6 +12,7 @@
 // Stopped stacks are muted everywhere: grey text, hollow dots, no bold.
 import {
   atom,
+  Box,
   Button,
   Callout,
   EmptyState,
@@ -107,18 +108,50 @@ function dot(tone: Dot, key?: string) {
   )
 }
 
-/** `<repo> · <name>`, the repo part muted; all muted, and never bold, when stopped. */
+/** Keeps its width when space runs out: a dot, a tag, buttons. */
+function fixed(key: string, child: OrcaNode) {
+  return (
+    <Box key={key} shrink={false}>
+      {child}
+    </Box>
+  )
+}
+
+/** Gives up width first, so the text in it truncates instead of wrapping. */
+function squeezable(key: string, child: OrcaNode, grow = false) {
+  return (
+    <Box key={key} shrink grow={grow} minWidth={0}>
+      {child}
+    </Box>
+  )
+}
+
+/**
+ * `<repo> · <name>`, the repo part muted; all muted, and never bold, when stopped. Both parts
+ * truncate when space runs out, the repo part at 120px at most, so the name stays readable.
+ */
 function title(repo: string, name: string, options: { stopped: boolean; strong?: boolean }, key = 'title') {
   const weight = options.strong && !options.stopped ? 'semibold' : 'regular'
   return (
-    <Text size="sm" muted={options.stopped} truncate key={key}>
-      <Text size="sm" muted>
-        {`${repo} · `}
-      </Text>
-      <Text size="sm" weight={weight} muted={options.stopped}>
-        {name}
-      </Text>
-    </Text>
+    <Box direction="row" align="center" gap="xs" shrink minWidth={0} key={key}>
+      <Box key="repo" shrink minWidth={0} maxWidth={120}>
+        <Text size="sm" muted truncate>
+          {repo}
+        </Text>
+      </Box>
+      {fixed(
+        'dot',
+        <Text size="sm" muted>
+          ·
+        </Text>
+      )}
+      {squeezable(
+        'name',
+        <Text size="sm" weight={weight} muted={options.stopped} truncate>
+          {name}
+        </Text>
+      )}
+    </Box>
   )
 }
 
@@ -131,69 +164,85 @@ interface Owner {
   repoKey: string
 }
 
-/** One service: a dot, its name, its ports on one line, a `shared` tag, and its buttons. */
+/**
+ * One service on two lines. First: a dot, the name (truncated, never broken), a `shared` tag and
+ * the buttons at the right. Then, indented under the name, its ports, wrapping only between
+ * `label :port` entries. No second line without ports.
+ */
 function serviceLine({ service, shared, placeholder }: ServiceLine, owner: Owner, showTag: boolean, disabled: boolean) {
   const key = shared ? `shared:${owner.repoKey}` : owner.key
   const stopped = placeholder || service.state !== 'active'
   const labels = portLabels(service.ports)
   const workspaceId = owner.workspaceId
   return (
-    <Row key={`service:${key}:${service.name}`} justify="between" align="center" gap="xs">
-      <Row gap="xs" align="center">
-        {dot(serviceDot(service))}
-        <Text size="sm" muted={stopped}>
-          {service.name}
-        </Text>
-        {labels.length === 0 ? null : (
-          <Text size="xs" muted truncate>
-            {labels.flatMap((p, i) => [
-              i === 0 ? '' : ' ',
-              labels.length === 1 ? '' : `${p.label} `,
-              <Link href={`http://localhost:${p.port}`} key={p.name}>{`:${p.port}`}</Link>
-            ])}
-          </Text>
-        )}
-        {showTag && shared ? (
-          <Text size="xs" muted>
-            shared
-          </Text>
-        ) : null}
-      </Row>
-      <Row gap="none" align="center">
-        {!shared && service.tier === 'isolated' ? (
+    <Stack gap="none" key={`service:${key}:${service.name}`}>
+      <Box direction="row" align="center" gap="xs" key="head">
+        <Box direction="row" align="center" gap="xs" grow shrink minWidth={0} key="what">
+          {fixed('dot', dot(serviceDot(service)))}
+          {squeezable(
+            'name',
+            <Text size="sm" muted={stopped} truncate>
+              {service.name}
+            </Text>
+          )}
+          {showTag && shared
+            ? fixed(
+                'tag',
+                <Text size="xs" muted>
+                  shared
+                </Text>
+              )
+            : null}
+        </Box>
+        <Box direction="row" align="center" shrink={false} key="buttons">
+          {!shared && service.tier === 'isolated' ? (
+            <IconButton
+              key={`restart:${key}:${service.name}`}
+              icon="refresh"
+              label={`Restart ${service.name}`}
+              tooltip={`Restart ${service.name}`}
+              variant="ghost"
+              size="xs"
+              disabled={disabled || placeholder}
+              onPress={() => start(workspaceId, 'restart-service', service.name)}
+            />
+          ) : null}
           <IconButton
-            key={`restart:${key}:${service.name}`}
-            icon="refresh"
-            label={`Restart ${service.name}`}
-            tooltip={`Restart ${service.name}`}
+            key={`logs:${key}:${service.name}`}
+            icon="file-text"
+            label={`Logs ${service.name}`}
+            tooltip={`Follow the logs of ${service.name}`}
             variant="ghost"
             size="xs"
-            disabled={disabled || placeholder}
-            onPress={() => start(workspaceId, 'restart-service', service.name)}
+            disabled={placeholder}
+            onPress={() => openTerminal(workspaceId, 'logs', { service: service.name, shared })}
           />
-        ) : null}
-        <IconButton
-          key={`logs:${key}:${service.name}`}
-          icon="file-text"
-          label={`Logs ${service.name}`}
-          tooltip={`Follow the logs of ${service.name}`}
-          variant="ghost"
-          size="xs"
-          disabled={placeholder}
-          onPress={() => openTerminal(workspaceId, 'logs', { service: service.name, shared })}
-        />
-        <IconButton
-          key={`attach:${key}:${service.name}`}
-          icon="terminal"
-          label={`Attach ${service.name}`}
-          tooltip={shared ? 'Open the shared instance in process-compose' : 'Open this stack in process-compose'}
-          variant="ghost"
-          size="xs"
-          disabled={placeholder}
-          onPress={() => openTerminal(workspaceId, 'attach', { shared })}
-        />
-      </Row>
-    </Row>
+          <IconButton
+            key={`attach:${key}:${service.name}`}
+            icon="terminal"
+            label={`Attach ${service.name}`}
+            tooltip={shared ? 'Open the shared instance in process-compose' : 'Open this stack in process-compose'}
+            variant="ghost"
+            size="xs"
+            disabled={placeholder}
+            onPress={() => openTerminal(workspaceId, 'attach', { shared })}
+          />
+        </Box>
+      </Box>
+      {labels.length === 0 ? null : (
+        <Box direction="row" wrap gap="xs" paddingX="md" key="ports">
+          {labels.map((p) =>
+            fixed(
+              p.name,
+              <Text size="xs" muted>
+                {labels.length === 1 ? '' : `${p.label} `}
+                <Link href={`http://localhost:${p.port}`}>{`:${p.port}`}</Link>
+              </Text>
+            )
+          )}
+        </Box>
+      )}
+    </Stack>
   )
 }
 
@@ -304,19 +353,17 @@ function note(row: RowView) {
   )
 }
 
-/** The focused worktree: its title and actions on one line, then its services. Always open. */
+/** The focused worktree: its title (truncated when long), its actions, then its services. Always open. */
 function focusedSection(placed: Placed) {
   const { repo, row } = placed
   const id = row.workspace.id
   return (
     <Stack gap="xs" key={`focused:${id}`}>
-      <Row key={`line:${id}`} justify="between" align="center" gap="xs" wrap>
-        <Row gap="xs" align="center">
-          {title(repo.label, nameOf(row), { stopped: stoppedRow(row), strong: true })}
-          {note(row)}
-        </Row>
-        {actions(row)}
-      </Row>
+      <Box direction="row" align="center" gap="xs" key={`line:${id}`}>
+        {title(repo.label, nameOf(row), { stopped: stoppedRow(row), strong: true })}
+        {note(row) === null ? null : fixed('note', note(row))}
+      </Box>
+      {actions(row)}
       {details(placed, true)}
     </Stack>
   )
@@ -325,19 +372,22 @@ function focusedSection(placed: Placed) {
 /** One closed-or-open line: a dot, `<repo> · <name>`, what follows, and a chevron at the right. */
 function line(key: string, label: string, head: OrcaNode, open: boolean) {
   return (
-    <Row key={`line:${key}`} justify="between" align="center" gap="xs">
-      <Row gap="xs" align="center">
+    <Box direction="row" align="center" gap="xs" key={`line:${key}`}>
+      <Box direction="row" align="center" gap="xs" grow shrink minWidth={0} key="head">
         {head}
-      </Row>
-      <IconButton
-        key={`row:${key}`}
-        icon={open ? 'expand' : 'next'}
-        label={`${open ? 'Close' : 'Open'} ${label}`}
-        variant="ghost"
-        size="xs"
-        onPress={() => toggle(key)}
-      />
-    </Row>
+      </Box>
+      {fixed(
+        'chevron',
+        <IconButton
+          key={`row:${key}`}
+          icon={open ? 'expand' : 'next'}
+          label={`${open ? 'Close' : 'Open'} ${label}`}
+          variant="ghost"
+          size="xs"
+          onPress={() => toggle(key)}
+        />
+      )}
+    </Box>
   )
 }
 
@@ -353,20 +403,16 @@ function rowEntry(placed: Placed) {
         id,
         `${repo.label} · ${nameOf(row)}`,
         [
-          dot(rowDot(row), 'dot'),
+          fixed('dot', dot(rowDot(row))),
           title(repo.label, nameOf(row), { stopped }),
-          stopped || dots.length === 0 ? null : (
-            <Text size="xs" key="dots">
-              {dots.map((d, i) => dot(d, String(i)))}
-            </Text>
-          ),
-          note(row)
+          stopped || dots.length === 0 ? null : fixed('dots', <Text size="xs">{dots.map((d, i) => dot(d, String(i)))}</Text>),
+          note(row) === null ? null : fixed('note', note(row))
         ],
         open
       )}
       {open ? (
         <Stack gap="xs" key={`open:${id}`}>
-          <Row justify="end" key={`bar:${id}`}>
+          <Row key={`bar:${id}`}>
             {actions(row)}
           </Row>
           {details(placed, false)}
@@ -388,17 +434,15 @@ function sharedEntry(repo: RepoView, instance: InstanceView) {
         key,
         `${repo.label} · shared`,
         [
-          dot(instanceDot(instance), 'dot'),
+          fixed('dot', dot(instanceDot(instance))),
           title(repo.label, 'shared', { stopped: false }),
-          <Text size="xs" key="dots">
-            {lines.map((l, i) => dot(serviceDot(l.service), String(i)))}
-          </Text>
+          fixed('dots', <Text size="xs">{lines.map((l, i) => dot(serviceDot(l.service), String(i)))}</Text>)
         ],
         open
       )}
       {open ? (
         <Stack gap="xs" key={`open:${key}`}>
-          <Row justify="end" key={`bar:${key}`}>
+          <Row key={`bar:${key}`}>
             <IconButton
               key={`attach:${key}`}
               icon="terminal"

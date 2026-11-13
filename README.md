@@ -9,11 +9,11 @@ which runs a process-compose stack per git worktree without port collisions.
   `devtrees.yaml`. Each is named `<repo> · <branch>`, the repo after Orca's project on Orca
   1.4.256 and newer, otherwise after the main checkout's folder:
   - the focused worktree first, always open: Up, Down, Restart, Logs (`devtrees logs -f --all`)
-    and Attach (`devtrees attach`), then one line per service: a status dot (green healthy,
-    amber starting or no health check, red dead, grey stopped), its name, its ports on one line
-    (`:41230`, or `http :41231 debug :41232`, each a `localhost` link), a `shared` tag for the
+    and Attach (`devtrees attach`), then each service: a status dot (green running, amber not
+    ready yet, starting or restarting, red dead, grey stopped), its name, a `shared` tag for the
     repo's shared services, and Logs (`devtrees logs -f <service>`), Attach and, for isolated
-    services, Restart. When the stack is down, its services are greyed (their names come from
+    services, Restart. Its ports go on a second line (`:41230`, or `http :41231 debug :41232`,
+    each a `localhost` link). Long names truncate. When the stack is down, its services are greyed (their names come from
     another worktree of the repo) and only Up stands out;
   - below, a flat list of the other stacks that run, with a dot per service, and each repo's
     running shared instance as `<repo> · shared` (Attach runs `devtrees attach --shared`).

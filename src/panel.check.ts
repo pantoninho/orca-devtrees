@@ -98,6 +98,46 @@ const withRow = (v: StackView, id: string, change: Partial<RowView>): StackView 
 
 const answer = (view: StackView) => ({ 'stack.get': () => view })
 
+/** Long names everywhere: a long repo, a 40+ character branch, a shared service with three ports. */
+const LONG_REPO = 'northwind-logistics-fulfilment-platform'
+const longShared: InstanceView = {
+  status: 'up',
+  id: 'shared',
+  namespaces: ['default'],
+  services: [
+    svc(
+      'supabase-shared',
+      [
+        ['SUPABASE_SHARED_API_PORT', 60640],
+        ['SUPABASE_SHARED_DB_PORT', 60641],
+        ['SUPABASE_SHARED_DB_SHADOW_PORT', 60642]
+      ],
+      { tier: 'shared', health: 'unknown' }
+    )
+  ]
+}
+const LONG_FOCUSED = rowOf(
+  20,
+  'invoice-rework',
+  '/work/northwind-wt/invoice-rework',
+  {
+    ...running('invoice-rework-1a2b3c4d', 43230),
+    services: [...running('invoice-rework-1a2b3c4d', 43230).services, svc('notification-dispatcher-worker', [['NOTIFICATION_DISPATCHER_PORT', 43240]])]
+  },
+  LONG_REPO,
+  'feature/rework-the-invoice-reconciliation-pipeline'
+)
+const LONG_OTHER = rowOf(21, 'carrier-api', '/work/northwind-wt/carrier-api', running('carrier-api-1a2b3c4e', 43330), LONG_REPO, 'fix/carrier-rate-limit-backoff-and-retry-budget')
+const longRepo: RepoView = {
+  key: '/work/northwind/.git',
+  label: LONG_REPO,
+  kind: 'ok',
+  message: null,
+  shared: longShared,
+  rows: [LONG_FOCUSED, LONG_OTHER, rowOf(22, 'stale-spike', '/work/northwind-wt/stale-spike', stopped('stale-spike-1a2b3c4f'), LONG_REPO)]
+}
+const long: StackView = { ...many, repos: [longRepo, demo], focusedId: LONG_FOCUSED.workspace.id }
+
 export default defineCheck({
   /** The focused worktree runs: title, actions, its services and the shared cache; below, running others and a shared instance. */
   focusedRunning: { requests: answer(many) },
@@ -131,5 +171,11 @@ export default defineCheck({
   },
   empty: { requests: answer({ ...many, repos: [], focusedId: null }) },
   tooOld: { requests: answer({ ...many, kind: 'too-old' }) },
-  notInstalled: { requests: answer({ ...many, kind: 'not-installed' }) }
+  notInstalled: { requests: answer({ ...many, kind: 'not-installed' }) },
+  /** Long repo, branch and service names, and a shared service with three ports, at narrow widths. */
+  longNames: { requests: answer(long) },
+  /** The same with nothing focused: long lines in the list, the shared instance among them. */
+  longNamesList: { requests: answer({ ...long, focusedId: null }) },
+  /** The focused long-named worktree stopped: greyed services borrowed from its sibling. */
+  longNamesDown: { requests: answer({ ...long, focusedId: 'identity:wt2:local:22' }) }
 })

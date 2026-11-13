@@ -24,9 +24,13 @@ const service = (state: ServiceView['state'], health: ServiceView['health']): Se
   ports: []
 })
 
-test('one dot per service: green healthy, amber starting or unknown, red dead, grey done', () => {
+test('one dot per service: green running, amber not ready or in transition, red dead, grey done', () => {
   assert.equal(serviceDot(service('active', 'ready')), 'success')
-  assert.equal(serviceDot(service('active', 'unknown')), 'warning')
+  // No readiness probe is the usual case: running is enough.
+  assert.equal(serviceDot(service('active', 'unknown')), 'success')
+  for (const status of ['Pending', 'Launching', 'Restarting', 'Terminating']) {
+    assert.equal(serviceDot({ ...service('active', 'unknown'), status }), 'warning')
+  }
   assert.equal(serviceDot(service('active', 'not_ready')), 'warning')
   assert.equal(serviceDot(service('dead', 'unknown')), 'danger')
   assert.equal(serviceDot(service('done', 'unknown')), 'neutral')

@@ -88,7 +88,7 @@ const drawn = (v: TestPanel) => {
   const keys: string[] = []
   const walk = (n: TreeSnapshot | string | null | undefined) => {
     if (n === null || n === undefined || typeof n === 'string') return
-    if (n.type === 'Row' && n.key?.startsWith('line:')) keys.push(n.key.slice('line:'.length))
+    if (n.key?.startsWith('line:')) keys.push(n.key.slice('line:'.length))
     for (const c of n.children ?? []) walk(c)
   }
   walk(v.tree())
@@ -109,7 +109,7 @@ test('focused running: repo · branch first, always open, its services and the s
   assert.ok(view.find({ text: ':41230' }))
   // The repo's shared cache, tagged, with its own logs.
   const cache = view.find({ testId: `service:shared:${FIXTURE}:cache` })
-  assert.match(cache?.text ?? '', /cache.*:50000.*shared/)
+  assert.match(cache?.text ?? '', /^● cache shared :50000$/)
   assert.ok(view.find({ testId: `logs:shared:${FIXTURE}:cache` }))
   assert.equal(view.find({ label: 'Restart cache' }), null)
   assert.deepEqual(view.errors, [])
@@ -122,7 +122,7 @@ test('below: a flat list of running stacks, repo first, then the running shared 
   assert.deepEqual(drawn(view), [MAIN, FEAT, FIX, `shared:${DEMO}`, 'stopped'])
   assert.match(lineOf(view, FEAT) ?? '', /^● demo-app · feat\/x ● ●$/)
   assert.match(lineOf(view, `shared:${DEMO}`) ?? '', /demo-app · shared/)
-  assert.equal(view.find({ text: 'devtrees-fixture' }), null)
+  assert.equal(view.find({ testId: `line:shared:${FIXTURE}` }), null)
   assert.equal(isOpen(view, FEAT), false)
   await view.press({ testId: `row:${FEAT}` })
   assert.equal(isOpen(view, FEAT), true)
@@ -131,6 +131,40 @@ test('below: a flat list of running stacks, repo first, then the running shared 
   assert.equal(view.find({ testId: `service:shared:${DEMO}:db` }), null)
   await view.press({ testId: `row:shared:${DEMO}` })
   assert.ok(view.find({ testId: `service:shared:${DEMO}:db` }))
+})
+
+/** The tones of a line's service dots, in order. */
+function dotsOf(v: TestPanel, id: string): unknown[] {
+  const find = (n: TreeSnapshot | string | null | undefined, key: string): TreeSnapshot | null => {
+    if (n === null || n === undefined || typeof n === 'string') return null
+    if (n.key === key) return n
+    for (const c of n.children ?? []) {
+      const hit = find(c, key)
+      if (hit !== null) return hit
+    }
+    return null
+  }
+  const dots = find(find(v.tree(), `line:${id}`), 'dots')
+  const tones: unknown[] = []
+  const walk = (n: TreeSnapshot | string) => {
+    if (typeof n === 'string') return
+    if (n.type === 'Text' && n.children?.some((c) => c === '●' || c === '○')) tones.push(n.props?.tone ?? 'neutral')
+    for (const c of n.children ?? []) walk(c)
+  }
+  if (dots !== null) walk(dots)
+  return tones
+}
+
+test('a running service without a readiness probe is green, in the list too', async () => {
+  view = await mount(panel, { host: host(base) })
+  // The shared cache runs without a probe; the list's dot for it is green.
+  assert.deepEqual(dotsOf(view, `shared:${DEMO}`), ['success'])
+  assert.deepEqual(dotsOf(view, FEAT), ['success', 'danger'])
+  const starting = withRow(base, FEAT, {
+    stack: { ...running('feat-x-33333333', 42230), services: [{ ...running('x', 1).services[0], status: 'Restarting', health: 'unknown' }] }
+  })
+  await view.post('stack.changed', starting)
+  assert.deepEqual(dotsOf(view, FEAT), ['warning'])
 })
 
 test('focused down: services greyed from a sibling, only Up left to press', async () => {
