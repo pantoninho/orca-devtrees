@@ -1,4 +1,4 @@
-// A stand-in for the devtrees CLI and the file system, for the worker tests.
+// A stand-in for the devtrees, orca and git CLIs and the file system, for the worker tests.
 import { createHash } from 'node:crypto'
 import { worktreeIdOf, type RunOptions, type RunResult, type Runner } from './devtrees'
 
@@ -55,10 +55,27 @@ export function lsRunning(path: string, extra: { dead?: string[] } = {}) {
 
 export const lsEmpty = { schema_version: '1', ls: { instances: [], shared_ports: {} } }
 
+/** One `orca terminal list --json` row: a terminal handle and the worktree it runs in. */
+export const terminal = (handle: string, worktreePath: string, executionHostId = 'local') => ({
+  handle,
+  worktreePath,
+  worktreeId: `repo::${worktreePath}`,
+  executionHostId,
+  title: 'zsh',
+  preview: 'x'.repeat(200)
+})
+
+/** Subcommands of the orca and git CLIs, which are not devtrees. */
+const LOOKUPS = new Set(['terminal', 'rev-parse'])
+
 export class FakeRunner implements Runner {
   calls: Call[] = []
   files = new Set<string>()
   replies = new Map<string, Reply>()
+  /** What `orca terminal list --json` lists; null makes it fail. */
+  terminals: ReturnType<typeof terminal>[] | null = []
+  /** `git rev-parse --git-common-dir` by cwd; a cwd not listed fails as outside a repo. */
+  commonDirs = new Map<string, string>()
   /** Replies to commands still running, released by `release()`. */
   private held: (() => void)[] = []
   hold = false
@@ -76,10 +93,23 @@ export class FakeRunner implements Runner {
   async run(executable: string, args: string[], { cwd, detached = false }: RunOptions): Promise<RunResult> {
     const call = { executable, args, cwd, detached }
     this.calls.push(call)
-    if (this.hold && args[0] !== 'ls') await new Promise<void>((go) => this.held.push(go))
-    const reply = this.replies.get(args[0]) ?? { code: 0, stdout: '{}' }
+    if (this.hold && args[0] !== 'ls' && !LOOKUPS.has(args[0])) await new Promise<void>((go) => this.held.push(go))
+    const reply = this.replies.get(args[0]) ?? this.lookup(call) ?? { code: 0, stdout: '{}' }
     const value = typeof reply === 'function' ? reply(call) : reply
     return { code: 0, stdout: '', stderr: '', notFound: false, ...value }
+  }
+
+  private lookup(call: Call): Partial<RunResult> | null {
+    if (call.args[0] === 'terminal') {
+      if (this.terminals === null) return { code: 1, stderr: 'orca: not running' }
+      const doc = { id: 'x', ok: true, result: { terminals: this.terminals } }
+      return { code: 0, stdout: `${JSON.stringify(doc, null, 2)}\n` }
+    }
+    if (call.args[0] === 'rev-parse') {
+      const dir = this.commonDirs.get(call.cwd)
+      return dir === undefined ? { code: 128, stderr: 'fatal: not a git repository' } : { code: 0, stdout: `${dir}\n` }
+    }
+    return null
   }
 
   async exists(path: string): Promise<boolean> {
@@ -92,9 +122,14 @@ export class FakeRunner implements Runner {
 
   sha256 = sha256
 
-  /** The subcommands run so far, such as `['ls', 'up']`. */
+  /** The devtrees calls so far, without the orca and git lookups. */
+  get devtrees(): Call[] {
+    return this.calls.filter((c) => !LOOKUPS.has(c.args[0]))
+  }
+
+  /** The devtrees subcommands run so far, such as `['ls --services --json', 'up ...']`. */
   get commands(): string[] {
-    return this.calls.map((c) => c.args.join(' '))
+    return this.devtrees.map((c) => c.args.join(' '))
   }
 }
 

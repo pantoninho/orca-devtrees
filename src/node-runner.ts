@@ -1,21 +1,26 @@
-// The real Runner: spawns the devtrees CLI and reads the file system.
+// The real Runner: spawns the devtrees, orca and git CLIs and reads the file system.
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { access, realpath } from 'node:fs/promises'
 import type { RunResult, Runner } from './devtrees'
 
-/** Output beyond this is dropped; devtrees' JSON is far smaller. */
-const MAX_OUTPUT = 4 * 1024 * 1024
+/**
+ * Output beyond this is dropped. devtrees' JSON is far smaller; `orca terminal list --json`
+ * carries a preview of each terminal and grows with their number.
+ */
+const MAX_OUTPUT = 64 * 1024 * 1024
 
 export const nodeRunner: Runner = {
-  run(executable, args, { cwd, detached = false }) {
+  run(executable, args, { cwd, detached = false, timeoutMs }) {
     return new Promise<RunResult>((resolve) => {
       let stdout = ''
       let stderr = ''
       let settled = false
+      let timer: ReturnType<typeof setTimeout> | null = null
       const finish = (result: RunResult) => {
         if (settled) return
         settled = true
+        if (timer !== null) clearTimeout(timer)
         resolve(result)
       }
       // `detached` puts the CLI in its own process group: when Orca restarts the worker, the
@@ -31,6 +36,12 @@ export const nodeRunner: Runner = {
         finish({ code: null, stdout, stderr: stderr || error.message, notFound: error.code === 'ENOENT' })
       })
       child.on('close', (code) => finish({ code, stdout, stderr, notFound: false }))
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          child.kill()
+          finish({ code: null, stdout, stderr: `${executable} timed out after ${timeoutMs} ms`, notFound: false })
+        }, timeoutMs)
+      }
     })
   },
   async exists(path) {

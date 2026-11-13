@@ -25,7 +25,7 @@ import {
   type PanelContext
 } from 'orca'
 import { MIN_DEVTREES_VERSION } from './devtrees'
-import type { InstanceView, ServiceView, StackAction, StackView } from './protocol'
+import type { InstanceView, ServiceView, StackAction, StackView, WorkspaceRef } from './protocol'
 
 const view = atom<StackView | null>(null)
 /** Why the last press did not start, or why the worker failed to answer. */
@@ -58,6 +58,7 @@ const STATUS_TONE = { up: 'success', partial: 'danger', down: 'neutral', unknown
 const STATUS_TEXT = { up: 'up', partial: 'degraded', down: 'down', unknown: 'not answering' } as const
 const STATE_TONE = { active: 'success', dead: 'danger', done: 'neutral' } as const
 const HEALTH_TEXT = { ready: 'healthy', not_ready: 'not ready', unknown: null } as const
+const FOUND_BY = { terminals: 'found by its terminals', name: 'found by name and branch', pick: 'picked by you' } as const
 const BUSY_TEXT = { up: 'Starting', down: 'Stopping', restart: 'Restarting', 'restart-service': 'Restarting' } as const
 
 function ServiceRow({ service, canRestart, disabled }: { service: ServiceView; canRestart: boolean; disabled: boolean }) {
@@ -109,7 +110,33 @@ function Services({ instance, own, disabled }: { instance: InstanceView; own: bo
   )
 }
 
+/** Such as `orca-devtrees / main (main) - /work/app/main`; the project needs Orca 1.4.256 or newer. */
+function labelOf(c: WorkspaceRef): string {
+  const name = c.project === null ? c.name : `${c.project} / ${c.name}`
+  const branch = c.branch === null || c.branch === c.name ? '' : ` (${c.branch})`
+  return `${name}${branch} - ${c.path}`
+}
+
+function Picker({ v }: { v: StackView }) {
+  return (
+    <Select
+      label="Worktree"
+      value={v.workspace?.id}
+      placeholder="Pick the worktree you are in"
+      options={v.candidates.map((c) => ({ value: c.id, label: labelOf(c) }))}
+      onChange={async (workspaceId) => set(view, await plugin.request('workspace.pick', { workspaceId }))}
+    />
+  )
+}
+
 function Empty({ v }: { v: StackView }) {
+  if (v.kind === 'unresolved') {
+    return (
+      <Callout tone="warning" title="Which worktree?" icon="warning">
+        <Text size="sm">{v.message ?? 'Pick the worktree you are in.'}</Text>
+      </Callout>
+    )
+  }
   if (v.kind === 'no-workspace') {
     return <EmptyState icon="folder" title="No worktree focused" description="Open a local worktree to see its stack." />
   }
@@ -152,14 +179,7 @@ export default function Panel() {
           <IconButton icon="refresh" label="Refresh" tooltip="Refresh" variant="ghost" size="sm" onPress={() => load(true)} />
         </Row>
       </Row>
-      {v.candidates.length > 1 ? (
-        <Select
-          label="Worktree"
-          value={v.workspace?.id}
-          options={v.candidates.map((c) => ({ value: c.id, label: `${c.name} (${c.path})` }))}
-          onChange={async (workspaceId) => set(view, await plugin.request('workspace.pick', { workspaceId }))}
-        />
-      ) : null}
+      {v.candidates.length > 0 ? <Picker v={v} /> : null}
       {note === null ? null : <Callout tone="warning">{note}</Callout>}
       {v.kind !== 'ok' || stack === null ? (
         <Empty v={v} />
@@ -193,6 +213,7 @@ export default function Panel() {
           </Card>
           <Text muted size="xs">
             Runs <Code>{v.executable}</Code> in {v.workspace?.path ?? ''}
+            {v.resolvedBy === null ? '' : ` (${FOUND_BY[v.resolvedBy]})`}
           </Text>
         </Stack>
       )}

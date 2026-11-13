@@ -52,6 +52,14 @@
         "placeholder": "devtrees"
       },
       {
+        "key": "orcaPath",
+        "title": "orca executable",
+        "description": "Name or absolute path of the orca CLI, used to find which worktree the focused terminals belong to. A name is looked up on your login PATH.",
+        "type": "string",
+        "default": "orca",
+        "placeholder": "orca"
+      },
+      {
         "key": "pollSeconds",
         "title": "Refresh interval (seconds)",
         "description": "How often to re-read the stack, to catch changes made outside the panel. 0 turns it off.",

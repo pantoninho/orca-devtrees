@@ -33,19 +33,30 @@ export interface WorkspaceRef {
   id: string
   name: string
   path: string
+  /** Without `refs/heads/`; null for a folder or a detached head. */
+  branch: string | null
+  /** The repository's display name, when Orca sends it (1.4.256 and newer). */
+  project: string | null
 }
 
 export type StackAction = 'up' | 'down' | 'restart' | 'restart-service'
 
 export interface StackView {
   /**
-   * `no-workspace`: nothing focused, or not a local worktree. `no-config`: no devtrees.yaml.
+   * `no-workspace`: nothing focused, or not a local worktree. `unresolved`: Orca's context does
+   * not name one worktree for certain; `candidates` lists the ones it could be, and nothing runs
+   * until the person picks one. `no-config`: no devtrees.yaml.
    * `not-installed`: the devtrees executable was not found. `too-old`: it lacks `ls --services`.
    * `error`: devtrees failed; `message` says why. `ok`: `stack` and `shared` hold the stack.
    */
-  kind: 'no-workspace' | 'no-config' | 'not-installed' | 'too-old' | 'error' | 'ok'
+  kind: 'no-workspace' | 'unresolved' | 'no-config' | 'not-installed' | 'too-old' | 'error' | 'ok'
   workspace: WorkspaceRef | null
-  /** Workspaces the focused one could be, when Orca's context matches more than one. */
+  /**
+   * How `workspace` was found: from the focused terminals, from a unique name and branch, or
+   * from the person's pick. Null when there is no workspace.
+   */
+  resolvedBy: 'terminals' | 'name' | 'pick' | null
+  /** Workspaces the focused one could be, when Orca's context does not name one for certain. */
   candidates: WorkspaceRef[]
   message: string | null
   stack: InstanceView | null

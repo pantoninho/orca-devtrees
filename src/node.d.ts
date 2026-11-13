@@ -10,6 +10,7 @@ declare module 'node:child_process' {
     on(event: 'error', listener: (error: Error & { code?: string }) => void): void
     on(event: 'close', listener: (code: number | null) => void): void
     unref(): void
+    kill(): boolean
   }
   export function spawn(
     command: string,

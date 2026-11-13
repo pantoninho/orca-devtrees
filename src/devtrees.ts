@@ -21,6 +21,8 @@ export interface RunOptions {
    * meanwhile (every save of the plugin restarts it). Used for commands that change state.
    */
   detached?: boolean
+  /** Kill the command after this long; the result then has code null. */
+  timeoutMs?: number
 }
 
 /** Everything the worker needs from the machine. */
@@ -177,7 +179,7 @@ const BUSY_WORDS = {
 /** The status bar item for a view, such as `devtrees: up · web :41230`. */
 export function statusBarOf(view: StackView): StatusBarState {
   const hidden = { visible: false, text: 'devtrees', tone: 'neutral', tooltip: 'devtrees' } as const
-  if (view.kind === 'no-workspace' || view.kind === 'no-config') return hidden
+  if (view.kind === 'no-workspace' || view.kind === 'unresolved' || view.kind === 'no-config') return hidden
   if (view.kind === 'not-installed') {
     return { visible: true, text: 'devtrees: not found', tone: 'warning', tooltip: `${view.executable} was not found` }
   }

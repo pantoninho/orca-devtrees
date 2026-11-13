@@ -5,7 +5,8 @@ import type { StackView } from './protocol'
 
 const base: StackView = {
   kind: 'ok',
-  workspace: { id: 'r::/w/feature-x', name: 'feature-x', path: '/w/feature-x' },
+  workspace: { id: 'identity:wt2:local:2', name: 'feature-x', path: '/w/feature-x', branch: 'feature-x', project: null },
+  resolvedBy: 'terminals',
   candidates: [],
   message: null,
   stack: {
@@ -89,4 +90,42 @@ test('empty states', async () => {
   assert.match(view.summary().join('\n'), /devtrees not found/)
   await view.post('stack.changed', { ...base, kind: 'no-workspace', workspace: null, stack: null, shared: null })
   assert.match(view.summary().join('\n'), /No worktree focused/)
+})
+
+test('an unresolved worktree shows the picker and no actions', async () => {
+  const candidates: StackView['candidates'] = [
+    { id: 'a', name: 'main', path: '/w/app/main', branch: 'main', project: 'app' },
+    { id: 'b', name: 'main', path: '/w/other/main', branch: 'main', project: null }
+  ]
+  const picks: unknown[] = []
+  const unresolved: StackView = {
+    ...base,
+    kind: 'unresolved',
+    workspace: null,
+    resolvedBy: null,
+    candidates,
+    message: 'More than one worktree matches the focused one.',
+    stack: null,
+    shared: null
+  }
+  view = await mount(panel, {
+    host: mockHost({
+      requests: {
+        'stack.get': () => unresolved,
+        'workspace.pick': (input) => {
+          picks.push(input)
+          return { ...base, workspace: candidates[1], resolvedBy: 'pick', candidates }
+        }
+      }
+    })
+  })
+  const text = view.summary().join('\n')
+  assert.match(text, /Which worktree/)
+  const options = view.find({ label: 'Worktree' })?.props?.options as { label: string }[]
+  assert.deepEqual(options.map((o) => o.label), ['app / main - /w/app/main', 'main - /w/other/main'])
+  assert.equal(view.find({ role: 'button', text: 'Up' }), null)
+  assert.equal(view.find({ label: 'Restart web' }), null)
+  await view.select({ label: 'Worktree' }, 'b')
+  assert.deepEqual(picks, [{ workspaceId: 'b' }])
+  assert.ok(view.find({ role: 'button', text: 'Up' }))
 })
