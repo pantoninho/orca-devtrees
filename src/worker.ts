@@ -11,6 +11,7 @@ import {
   repoLabel,
   stackOf,
   statusBarOf,
+  terminalCommand,
   worktreeIdOf,
   type LsRead,
   type Runner,
@@ -333,18 +334,27 @@ export default function activate(orca: OrcaWorkerApi): void {
     return refresh('all')
   })
 
-  // Runs in the path of the pressed row, looked up again by its id: never the focused one.
-  orca.panels.handle('stack.action', async ({ workspaceId, action, service }) => {
+  /**
+   * The pressed row's workspace, looked up again by its id in `workspace.list`: never the
+   * focused one. A string is why it cannot be used.
+   */
+  async function target(workspaceId: string): Promise<Listed | string> {
     let listed: Listed[]
     try {
       listed = await listWorkspaces()
     } catch (error) {
-      return refuse(`Could not list workspaces: ${(error as Error).message}`)
+      return `Could not list workspaces: ${(error as Error).message}`
     }
     const w = listed.find((x) => x.id === workspaceId)
-    if (w === undefined) return refuse('That worktree is no longer open in Orca.')
-    if (!isLocal(w)) return refuse('Only local worktrees are supported.')
-    if (!(await runner.exists(`${w.path}/devtrees.yaml`))) return refuse(`${w.name} has no devtrees.yaml.`)
+    if (w === undefined) return 'That worktree is no longer open in Orca.'
+    if (!isLocal(w)) return 'Only local worktrees are supported.'
+    if (!(await runner.exists(`${w.path}/devtrees.yaml`))) return `${w.name} has no devtrees.yaml.`
+    return w
+  }
+
+  orca.panels.handle('stack.action', async ({ workspaceId, action, service }) => {
+    const w = await target(workspaceId)
+    if (typeof w === 'string') return refuse(w)
     let stack: InstanceView | null = null
     if (action === 'restart' || action === 'restart-service') {
       // Read the stack now: restart needs its namespaces, and a service must be one it runs.
@@ -359,6 +369,22 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (busy.has(trimSlash(w.path))) return refuse('Another action is still running in this worktree.')
     // Answer now: `up` can take minutes, longer than a panel request may wait.
     void act(w.path, action, service ?? null, stack)
+    return { started: true, reason: null }
+  })
+
+  // Opens a terminal in the pressed row's workspace: the TUI, or a log stream that follows.
+  orca.panels.handle('terminal.open', async ({ workspaceId, what, service, shared }) => {
+    const w = await target(workspaceId)
+    if (typeof w === 'string') return refuse(w)
+    if (service !== undefined && (what !== 'logs' || service === '')) return refuse('Only logs take a service.')
+    const isShared = shared === true
+    const where = isShared ? repoLabel(repoOf(trimSlash(w.path)), refOf(w).project) : w.name
+    const { command, title } = terminalCommand(await executable(), what, { service: service ?? null, shared: isShared, where })
+    try {
+      await orca.host.call('terminal.create', { workspaceId: w.id, title, command })
+    } catch (error) {
+      return refuse(`Could not open a terminal: ${(error as Error).message}`)
+    }
     return { started: true, reason: null }
   })
 

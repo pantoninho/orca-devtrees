@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { failureOf, readLs, repoLabel, stackOf, worktreeIdOf } from './devtrees'
+import { failureOf, readLs, repoLabel, shellQuote, stackOf, worktreeIdOf } from './devtrees'
 import { idOf, lsRepo, sha256 } from './fake-runner'
 
 test('derives the worktree id the way devtrees does', () => {
@@ -32,6 +32,15 @@ test('labels a repo with its Orca project, else its main checkout or bare repo n
   assert.equal(repoLabel('/w/app/.git', ''), 'app')
   assert.equal(repoLabel('/w/bare/app.git', null), 'app')
   assert.equal(repoLabel('/w/loose', null), 'loose')
+})
+
+test('quotes words for the shell', () => {
+  assert.equal(shellQuote('web'), 'web')
+  assert.equal(shellQuote('/opt/bin/devtrees'), '/opt/bin/devtrees')
+  assert.equal(shellQuote('a b'), `'a b'`)
+  assert.equal(shellQuote(`it's`), `'it'\\''s'`)
+  assert.equal(shellQuote(''), `''`)
+  assert.equal(shellQuote('$HOME;x'), `'$HOME;x'`)
 })
 
 test('reads an unresponsive instance as unknown', () => {

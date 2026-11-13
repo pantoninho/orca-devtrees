@@ -72,6 +72,7 @@
   },
   "capabilities": [
     { "kind": "workspace:read" },
-    { "kind": "settings:own" }
+    { "kind": "settings:own" },
+    { "kind": "terminal:send" }
   ]
 }

@@ -41,6 +41,9 @@ export interface WorkspaceRef {
 
 export type StackAction = 'up' | 'down' | 'restart' | 'restart-service'
 
+/** What a terminal opened from the panel runs. */
+export type TerminalKind = 'attach' | 'logs'
+
 export interface Busy {
   action: StackAction
   service: string | null
@@ -105,6 +108,15 @@ declare module 'orca' {
      */
     'stack.action': {
       input: { workspaceId: string; action: StackAction; service?: string }
+      output: { started: boolean; reason: string | null }
+    }
+    /**
+     * Opens an Orca terminal in the given workspace running `devtrees attach` or
+     * `devtrees logs`: for the worktree's instance, or with `shared`, for its repo's shared one.
+     * `service` picks one service's logs; without it, logs are for every service.
+     */
+    'terminal.open': {
+      input: { workspaceId: string; what: TerminalKind; service?: string; shared?: boolean }
       output: { started: boolean; reason: string | null }
     }
   }

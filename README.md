@@ -12,7 +12,11 @@ which runs a process-compose stack per git worktree without port collisions.
   - a row opens to show each service's name, state, health and tier (isolated or shared), and
     its ports as `localhost` links that open in the browser;
   - Up, Down and Restart on each row, and Restart for each isolated service;
-  - each repo's shared instance, in its own section.
+  - Attach (`devtrees attach`) and Logs (`devtrees logs -f --all`) on each row, and Logs
+    (`devtrees logs -f <service>`) for each service, each opening an Orca terminal in that
+    row's worktree;
+  - each repo's shared instance, in its own section, with Attach (`devtrees attach --shared`)
+    and Logs for each shared service (`devtrees logs -f --shared <service>`).
 - **Auto-prune.** When Orca removes a worktree, the plugin runs `devtrees prune` from another
   worktree of the same repo, so the removed worktree's instance does not keep running. It never
   prunes other repos.
@@ -56,6 +60,10 @@ orca plugin dev load /path/to/orca-devtrees
 - `workspace:read`: the list of workspaces, to find the rows; the focused workspace's name,
   branch and terminal ids, to highlight its row; and the `workspace.removed` event, to prune.
 - `settings:own`: the three settings above.
+- `terminal:send`: to open the Attach and Logs terminals with `terminal.create`. Orca
+  describes this capability as "Type and run commands in your terminals, local and SSH", which
+  is broader than what the plugin does: it only opens new terminals in local worktrees, running
+  `devtrees attach` or `devtrees logs`. It never types into an existing terminal.
 
 ## Which worktree it acts on
 

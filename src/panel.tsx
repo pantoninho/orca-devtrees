@@ -27,7 +27,7 @@ import {
   type PanelContext
 } from 'orca'
 import { MIN_DEVTREES_VERSION } from './devtrees'
-import type { InstanceView, RepoView, RowView, ServiceView, StackAction, StackView } from './protocol'
+import type { InstanceView, RepoView, RowView, ServiceView, StackAction, StackView, TerminalKind } from './protocol'
 
 const view = atom<StackView | null>(null)
 /** Why the last press did not start, or why the worker failed to answer. */
@@ -69,18 +69,29 @@ const HEALTH_TEXT = { ready: 'healthy', not_ready: 'not ready', unknown: null } 
 const BUSY_TEXT = { up: 'Starting', down: 'Stopping', restart: 'Restarting', 'restart-service': 'Restarting' } as const
 const BUSY_WORD = { up: 'starting', down: 'stopping', restart: 'restarting', 'restart-service': 'restarting' } as const
 
-function ServiceRow({
-  service,
-  workspaceId,
-  disabled
-}: {
-  service: ServiceView
-  /** The row whose stack this is; null for the shared instance, which is never restarted here. */
-  workspaceId: string | null
-  disabled: boolean
-}) {
+async function openTerminal(workspaceId: string, what: TerminalKind, options: { service?: string; shared?: boolean } = {}) {
+  try {
+    const answer = await plugin.request('terminal.open', { workspaceId, what, ...options })
+    set(notice, answer.started ? null : answer.reason)
+  } catch (error) {
+    set(notice, (error as Error).message)
+  }
+}
+
+/** Where a service's buttons run, and whether it belongs to the shared instance. */
+interface Owner {
+  /** The workspace the commands run in: the row's own, or for the shared instance one row of its repo. */
+  workspaceId: string
+  shared: boolean
+  /** Prefix of the buttons' keys: the row's workspace id, or `shared:<repo key>`. */
+  key: string
+}
+
+function ServiceRow({ service, owner, disabled }: { service: ServiceView; owner: Owner; disabled: boolean }) {
   const health = HEALTH_TEXT[service.health]
-  const canRestart = service.tier === 'isolated'
+  // Shared services are never restarted from a worktree.
+  const canRestart = !owner.shared && service.tier === 'isolated'
+  const workspaceId = owner.workspaceId
   return (
     <Box border radius="md" padding="sm" direction="column" gap="xs">
       <Row justify="between" align="center">
@@ -90,18 +101,29 @@ function ServiceRow({
           {health === null ? null : <Badge tone={service.health === 'ready' ? 'success' : 'warning'}>{health}</Badge>}
           <Badge tone={service.tier === 'shared' ? 'accent' : 'neutral'}>{service.tier}</Badge>
         </Row>
-        {canRestart && workspaceId !== null ? (
+        <Row gap="none" align="center">
           <IconButton
-            key={`restart:${workspaceId}:${service.name}`}
-            icon="refresh"
-            label={`Restart ${service.name}`}
-            tooltip={`Restart ${service.name}`}
+            key={`logs:${owner.key}:${service.name}`}
+            icon="file-text"
+            label={`Logs ${service.name}`}
+            tooltip={`Follow the logs of ${service.name} in a terminal`}
             variant="ghost"
             size="sm"
-            disabled={disabled}
-            onPress={() => start(workspaceId, 'restart-service', service.name)}
+            onPress={() => openTerminal(workspaceId, 'logs', { service: service.name, shared: owner.shared })}
           />
-        ) : null}
+          {canRestart ? (
+            <IconButton
+              key={`restart:${owner.key}:${service.name}`}
+              icon="refresh"
+              label={`Restart ${service.name}`}
+              tooltip={`Restart ${service.name}`}
+              variant="ghost"
+              size="sm"
+              disabled={disabled}
+              onPress={() => start(workspaceId, 'restart-service', service.name)}
+            />
+          ) : null}
+        </Row>
       </Row>
       {service.ports.length === 0 ? null : (
         <Row gap="sm" wrap>
@@ -116,14 +138,14 @@ function ServiceRow({
   )
 }
 
-function Services({ instance, workspaceId, disabled }: { instance: InstanceView; workspaceId: string | null; disabled: boolean }) {
+function Services({ instance, owner, disabled }: { instance: InstanceView; owner: Owner; disabled: boolean }) {
   if (instance.services.length === 0) {
     return <Text muted size="sm">{instance.status === 'down' ? 'Not running.' : 'No services reported.'}</Text>
   }
   return (
     <Stack gap="xs">
       {instance.services.map((s) => (
-        <ServiceRow service={s} workspaceId={workspaceId} disabled={disabled} key={s.name} />
+        <ServiceRow service={s} owner={owner} disabled={disabled} key={s.name} />
       ))}
     </Stack>
   )
@@ -176,6 +198,28 @@ function WorktreeRow({ row, focused, executable }: { row: RowView; focused: bool
             >
               Restart
             </Button>
+            <Button
+              key={`attach:${id}`}
+              icon="terminal"
+              size="sm"
+              variant="ghost"
+              tooltip="Open the process-compose TUI in a terminal"
+              disabled={stack === null || down}
+              onPress={() => openTerminal(id, 'attach')}
+            >
+              Attach
+            </Button>
+            <Button
+              key={`logs:${id}`}
+              icon="file-text"
+              size="sm"
+              variant="ghost"
+              tooltip="Follow the logs of every service in a terminal"
+              disabled={stack === null || down}
+              onPress={() => openTerminal(id, 'logs')}
+            >
+              Logs
+            </Button>
           </Row>
           {row.busy === null ? null : (
             <Text size="sm" tone="accent">
@@ -191,7 +235,7 @@ function WorktreeRow({ row, focused, executable }: { row: RowView; focused: bool
           {stack === null ? (
             <Text muted size="sm">Could not read this stack.</Text>
           ) : (
-            <Services instance={stack} workspaceId={id} disabled={busy} />
+            <Services instance={stack} owner={{ workspaceId: id, shared: false, key: id }} disabled={busy} />
           )}
           <Text muted size="xs">
             Runs <Code>{executable}</Code> in {row.workspace.path}
@@ -203,6 +247,8 @@ function WorktreeRow({ row, focused, executable }: { row: RowView; focused: bool
 }
 
 function Repo({ repo, v }: { repo: RepoView; v: StackView }) {
+  // The shared instance's commands run in one of the repo's worktrees: any of them reaches it.
+  const owner: Owner = { workspaceId: repo.rows[0]?.workspace.id ?? '', shared: true, key: `shared:${repo.key}` }
   return (
     <Stack gap="sm">
       <Heading level={3}>{repo.label}</Heading>
@@ -218,7 +264,21 @@ function Repo({ repo, v }: { repo: RepoView; v: StackView }) {
         {repo.shared === null ? (
           <Text muted size="sm">Not running.</Text>
         ) : (
-          <Services instance={repo.shared} workspaceId={null} disabled />
+          <Stack gap="sm">
+            <Row gap="xs">
+              <Button
+                key={`attach:${owner.key}`}
+                icon="terminal"
+                size="sm"
+                variant="ghost"
+                tooltip="Open the shared instance's process-compose TUI in a terminal"
+                onPress={() => openTerminal(owner.workspaceId, 'attach', { shared: true })}
+              >
+                Attach
+              </Button>
+            </Row>
+            <Services instance={repo.shared} owner={owner} disabled />
+          </Stack>
         )}
       </Card>
     </Stack>

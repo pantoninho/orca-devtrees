@@ -120,6 +120,36 @@ test('each row sends its own workspace id, whatever is focused', async () => {
   ])
 })
 
+test('Attach and Logs send the pressed row, and the shared section its repo', async () => {
+  const opens: unknown[] = []
+  view = await mount(panel, {
+    host: mockHost({
+      requests: {
+        'stack.get': () => base,
+        'terminal.open': (input) => {
+          opens.push(input)
+          return { started: true, reason: null }
+        }
+      }
+    })
+  })
+  await view.toggle({ testId: `row:${OTHER}` })
+  await view.press({ testId: `attach:${OTHER}` })
+  await view.press({ testId: `logs:${OTHER}` })
+  await view.press({ testId: `logs:${OTHER}:web` })
+  await view.press({ testId: 'attach:shared:/w/app/.git' })
+  await view.press({ testId: 'logs:shared:/w/app/.git:db' })
+  assert.deepEqual(opens, [
+    { workspaceId: OTHER, what: 'attach' },
+    { workspaceId: OTHER, what: 'logs' },
+    { workspaceId: OTHER, what: 'logs', service: 'web', shared: false },
+    { workspaceId: MAIN, what: 'attach', shared: true },
+    { workspaceId: MAIN, what: 'logs', service: 'db', shared: true }
+  ])
+  // A stopped stack has nothing to attach to.
+  assert.equal(view.find({ testId: `attach:${FEATURE}` })?.disabled, true)
+})
+
 test('without a resolved focus, nothing is highlighted or opened', async () => {
   view = await mount(panel, { host: host({ ...base, focusedId: null }) })
   for (const id of [MAIN, FEATURE, OTHER]) assert.equal(isOpen(view, id), false)

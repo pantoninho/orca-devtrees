@@ -1,6 +1,6 @@
 // Talking to the devtrees CLI: what to run, and how to read what it prints.
 // Pure functions over a `Runner`, so tests replace the CLI with a stub.
-import type { InstanceView, PortView, RepoView, RowView, ServiceView, StackView } from './protocol'
+import type { InstanceView, PortView, RepoView, RowView, ServiceView, StackView, TerminalKind } from './protocol'
 
 /** Oldest devtrees with `ls --services` and `restart`. */
 export const MIN_DEVTREES_VERSION = '0.1.0'
@@ -180,6 +180,31 @@ export const args = {
   down: ['down', '--json'],
   restart: (service: string) => ['restart', service, '--json'],
   prune: ['prune', '--json']
+}
+
+/** Quotes a word for a POSIX shell; plain words are left as they are. */
+export function shellQuote(word: string): string {
+  if (/^[A-Za-z0-9_\/.:=@%+-]+$/.test(word)) return word
+  return `'${word.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * The command and title of a terminal that attaches to an instance or follows its logs, such
+ * as `devtrees logs -f web` titled `devtrees logs web (feature-x)`.
+ */
+export function terminalCommand(
+  executable: string,
+  what: TerminalKind,
+  options: { service: string | null; shared: boolean; where: string }
+): { command: string; title: string } {
+  const shared = options.shared ? ['--shared'] : []
+  const words =
+    what === 'attach'
+      ? ['attach', ...shared]
+      : ['logs', '-f', ...shared, ...(options.service === null ? ['--all'] : [options.service])]
+  const command = [executable, ...words].map(shellQuote).join(' ')
+  const shown = words.filter((w) => w !== '-f' && w !== '--all')
+  return { command, title: `devtrees ${shown.join(' ')} (${options.where})` }
 }
 
 export interface StatusBarState {

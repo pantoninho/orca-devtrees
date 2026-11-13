@@ -74,7 +74,8 @@ async function start(runner: FakeRunner, options: Start = {}) {
     results: {
       'workspace.readContext': options.context === undefined ? focused : options.context,
       'workspace.list': () => ({ workspaces: workspaces.list, truncated: false }),
-      'statusBar.update': { ok: true }
+      'statusBar.update': { ok: true },
+      'terminal.create': { terminalId: 'term_new' }
     },
     settings: options.settings ?? {}
   })
@@ -338,6 +339,75 @@ test('restarts one isolated service of the pressed row, and refuses names its st
   await w.request('stack.action', { workspaceId: OTHER_ROW.id, action: 'restart-service', service: 'web' })
   await until(() => runner.commands.includes('restart web --json'), 'restart web')
   assert.equal(runner.calls.find((c) => c.args[0] === 'restart')?.cwd, OTHER)
+})
+
+// Terminals: attach and logs.
+
+const created = (w: TestWorker) => w.host.callsOf('terminal.create') as { workspaceId: string; title: string; command: string }[]
+
+test('Attach and Logs open a terminal in the pressed row, whatever is focused', async () => {
+  const runner = machine()
+  const w = await start(runner)
+  assert.equal((await w.request('stack.get', {})).focusedId, FEATURE_ROW.id)
+  const opens = [
+    { workspaceId: OTHER_ROW.id, what: 'attach' },
+    { workspaceId: OTHER_ROW.id, what: 'logs' },
+    { workspaceId: MAIN_ROW.id, what: 'logs', service: 'web' },
+    { workspaceId: MAIN_ROW.id, what: 'attach', shared: true },
+    { workspaceId: MAIN_ROW.id, what: 'logs', service: 'cache', shared: true }
+  ] as const
+  for (const input of opens) assert.deepEqual(await w.request('terminal.open', input), { started: true, reason: null })
+  assert.deepEqual(created(w), [
+    { workspaceId: OTHER_ROW.id, title: 'devtrees attach (main)', command: 'devtrees attach' },
+    { workspaceId: OTHER_ROW.id, title: 'devtrees logs (main)', command: 'devtrees logs -f --all' },
+    { workspaceId: MAIN_ROW.id, title: 'devtrees logs web (main)', command: 'devtrees logs -f web' },
+    { workspaceId: MAIN_ROW.id, title: 'devtrees attach --shared (app)', command: 'devtrees attach --shared' },
+    { workspaceId: MAIN_ROW.id, title: 'devtrees logs --shared cache (app)', command: 'devtrees logs -f --shared cache' }
+  ])
+  assert.deepEqual(w.refusals, [])
+  // Nothing runs devtrees in the worker for these.
+  assert.deepEqual(actionCalls(runner), [])
+})
+
+test('a terminal opens in the pressed row when focus does not resolve', async () => {
+  const w = await start(machine(), { context: twins })
+  await w.request('terminal.open', { workspaceId: FEATURE_ROW.id, what: 'logs', service: 'worker' })
+  assert.deepEqual(created(w), [{ workspaceId: FEATURE_ROW.id, title: 'devtrees logs worker (feature-x)', command: 'devtrees logs -f worker' }])
+})
+
+test('quotes the executable and odd service names', async () => {
+  const w = await start(machine(), { settings: { devtreesPath: "/opt/my tools/devtrees" } })
+  await w.request('terminal.open', { workspaceId: FEATURE_ROW.id, what: 'logs', service: "it's; rm -rf ~" })
+  await w.request('terminal.open', { workspaceId: FEATURE_ROW.id, what: 'logs', service: '$(touch x)`y`' })
+  assert.deepEqual(created(w).map((c) => c.command), [
+    `'/opt/my tools/devtrees' logs -f 'it'\\''s; rm -rf ~'`,
+    `'/opt/my tools/devtrees' logs -f '$(touch x)\`y\`'`
+  ])
+})
+
+test('refuses a terminal for a workspace that is gone, remote, or has no devtrees.yaml', async () => {
+  const w = await start(machine())
+  for (const [workspaceId, reason] of [
+    ['identity:wt2:local:unknown', /no longer open/],
+    [REMOTE_ROW.id, /Only local worktrees/],
+    [BARE_ROW.id, /no devtrees\.yaml/]
+  ] as const) {
+    const answer = await w.request('terminal.open', { workspaceId, what: 'attach' })
+    assert.equal(answer.started, false)
+    assert.match(answer.reason ?? '', reason)
+  }
+  assert.equal((await w.request('terminal.open', { workspaceId: MAIN_ROW.id, what: 'attach', service: 'web' })).started, false)
+  assert.deepEqual(created(w), [])
+})
+
+test('reports a terminal Orca could not open', async () => {
+  const w = await start(machine())
+  w.host.respond('terminal.create', () => {
+    throw new Error('no window')
+  })
+  const answer = await w.request('terminal.open', { workspaceId: MAIN_ROW.id, what: 'attach' })
+  assert.equal(answer.started, false)
+  assert.match(answer.reason ?? '', /Could not open a terminal/)
 })
 
 // Focus only highlights.
