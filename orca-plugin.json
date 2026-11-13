@@ -1,0 +1,69 @@
+{
+  "manifestVersion": 2,
+  "id": "devtrees",
+  "name": "devtrees",
+  "version": "0.1.0",
+  "description": "Shows and controls the devtrees stack of the focused worktree, and prunes the stacks of removed worktrees.",
+  "repository": "https://github.com/pantoninho/orca-devtrees",
+  "license": "MIT",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "panels": [
+      {
+        "id": "services",
+        "title": "devtrees",
+        "icon": "layers",
+        "entry": "src/panel.tsx",
+        "ui": "components"
+      }
+    ],
+    "events": [
+      { "on": "workspace.changed" },
+      { "on": "workspace.removed" }
+    ],
+    "commands": [
+      {
+        "id": "ports",
+        "title": "devtrees: Toggle Ports sidebar",
+        "action": "sidebar.ports.toggle"
+      }
+    ],
+    "statusBarItems": [
+      {
+        "id": "stack",
+        "icon": "layers",
+        "text": "devtrees",
+        "tooltip": "devtrees stack of the focused worktree",
+        "command": "ports"
+      }
+    ],
+    "settings": [
+      {
+        "key": "devtreesPath",
+        "title": "devtrees executable",
+        "description": "Name or absolute path of the devtrees CLI. A name is looked up on your login PATH.",
+        "type": "string",
+        "default": "devtrees",
+        "placeholder": "devtrees"
+      },
+      {
+        "key": "pollSeconds",
+        "title": "Refresh interval (seconds)",
+        "description": "How often to re-read the stack, to catch changes made outside the panel. 0 turns it off.",
+        "type": "integer",
+        "default": 15,
+        "minimum": 0,
+        "maximum": 600
+      }
+    ]
+  },
+  "capabilities": [
+    { "kind": "workspace:read" },
+    { "kind": "settings:own" }
+  ]
+}
