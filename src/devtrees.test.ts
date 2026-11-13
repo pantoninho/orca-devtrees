@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { failureOf, readLs, repoLabel, shellQuote, stackOf, worktreeIdOf } from './devtrees'
+import { failureOf, readLs, repoLabel, shellQuote, stackOf, terminalCommand, worktreeIdOf } from './devtrees'
 import { idOf, lsRepo, sha256 } from './fake-runner'
 
 test('derives the worktree id the way devtrees does', () => {
@@ -59,4 +59,22 @@ test('classifies failures', () => {
     code: 'UNKNOWN',
     message: 'boom'
   })
+})
+
+test('builds the Attach and Logs commands as plain words, one space apart', () => {
+  // Orca types `command` into the login shell. Plain words need no quoting, so attach and logs
+  // reach the shell in the same shape.
+  const at = (what: 'attach' | 'logs', service: string | null, shared: boolean) =>
+    terminalCommand('devtrees', what, { service, shared, where: 'feature-x' })
+  assert.deepEqual(at('attach', null, false), { command: 'devtrees attach', title: 'devtrees attach (feature-x)' })
+  assert.deepEqual(at('attach', null, true), { command: 'devtrees attach --shared', title: 'devtrees attach --shared (feature-x)' })
+  assert.deepEqual(at('logs', null, false), { command: 'devtrees logs -f --all', title: 'devtrees logs (feature-x)' })
+  assert.deepEqual(at('logs', 'web', false), { command: 'devtrees logs -f web', title: 'devtrees logs web (feature-x)' })
+  assert.deepEqual(at('logs', 'cache', true), { command: 'devtrees logs -f --shared cache', title: 'devtrees logs --shared cache (feature-x)' })
+  for (const what of ['attach', 'logs'] as const) {
+    const { command } = at(what, null, false)
+    assert.doesNotMatch(command, /['"\\$`;]|\s{2}|^\s|\s$/)
+  }
+  // A path with spaces, or an odd service name, is quoted as one word.
+  assert.equal(terminalCommand('/opt/my tools/devtrees', 'logs', { service: "it's", shared: false, where: 'x' }).command, `'/opt/my tools/devtrees' logs -f 'it'\\''s'`)
 })
