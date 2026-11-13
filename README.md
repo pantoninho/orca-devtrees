@@ -8,15 +8,17 @@ which runs a process-compose stack per git worktree without port collisions.
 - **Services panel** in the right sidebar, listing every local worktree open in Orca that has
   a `devtrees.yaml`, grouped by repo (named after Orca's project on Orca 1.4.256 and newer,
   otherwise after the main checkout's folder):
-  - one row per worktree: its name, branch and the stack's status;
-  - a row opens to show each service's name, state, health and tier (isolated or shared), and
-    its ports as `localhost` links that open in the browser;
-  - Up, Down and Restart on each row, and Restart for each isolated service;
-  - Attach (`devtrees attach`) and Logs (`devtrees logs -f --all`) on each row, and Logs
-    (`devtrees logs -f <service>`) for each service, each opening an Orca terminal in that
-    row's worktree;
-  - each repo's shared instance, in its own section, with Attach (`devtrees attach --shared`)
-    and Logs for each shared service (`devtrees logs -f --shared <service>`).
+  - one line per worktree: a status dot, its name, and its branch when that differs. Running
+    and focused rows come first; the other stopped rows fold into one "N stopped" line;
+  - a row opens to show Up, Down, Restart, Logs (`devtrees logs -f --all`) and Attach
+    (`devtrees attach`), and its services: a status dot each (green healthy, amber starting or
+    no health check, red dead, grey stopped), with Logs (`devtrees logs -f <service>`) and, for
+    isolated services, Restart. Ports show on one line with short names, such as
+    `web :41230 · api :41231`, each a `localhost` link that opens in the browser. Logs and
+    Attach open an Orca terminal in that row's worktree;
+  - each repo's shared instance on one line, such as "Shared · 1 running", which opens to show
+    its services, Attach (`devtrees attach --shared`) and Logs for each shared service
+    (`devtrees logs -f --shared <service>`).
 - **Auto-prune.** When Orca removes a worktree, the plugin runs `devtrees prune` from another
   worktree of the same repo, so the removed worktree's instance does not keep running. It never
   prunes other repos.
@@ -83,8 +85,8 @@ a branch, such as `main` on `main`. The plugin looks for the focused row this wa
    workspace with the same name and branch, and uses it only if exactly one matches.
 3. Otherwise nothing is highlighted and the status bar item is hidden. Nothing else changes.
 
-The highlighted row is opened by default. A row you open or close stays that way, also across
-a hot reload of the panel.
+The highlighted row is opened by default and is never folded. A row or section you open or
+close stays that way, also across a hot reload of the panel.
 
 ## How it prunes
 

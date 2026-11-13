@@ -73,7 +73,7 @@ test('builds the Attach and Logs commands as plain words, one space apart', () =
   assert.deepEqual(at('logs', 'cache', true), { command: 'devtrees logs -f --shared cache', title: 'devtrees logs --shared cache (feature-x)' })
   for (const what of ['attach', 'logs'] as const) {
     const { command } = at(what, null, false)
-    assert.doesNotMatch(command, /['"\\$`;]|\s{2}|^\s|\s$/)
+    assert.equal(/['"\\$`;]|\s{2}|^\s|\s$/.test(command), false, command)
   }
   // A path with spaces, or an odd service name, is quoted as one word.
   assert.equal(terminalCommand('/opt/my tools/devtrees', 'logs', { service: "it's", shared: false, where: 'x' }).command, `'/opt/my tools/devtrees' logs -f 'it'\\''s'`)
